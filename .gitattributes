@@ -1,0 +1,20 @@
+# Normalise line endings in history, check out native. Without this, files written by a
+# Unix-style tool and files written by a Windows editor churn against each other and a
+# one-line change shows as a whole-file rewrite.
+* text=auto
+
+# Always LF: these are read by tools that mis-handle CRLF.
+*.py   text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.css  text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+
+# Always CRLF: cmd.exe mis-parses LF-only batch files, silently running only the
+# first line in some cases.
+*.cmd  text eol=crlf
+
+# Binary, never diffed or line-ending-converted.
+*.png  binary
+*.db   binary

@@ -1,0 +1,36 @@
+# ── secrets ──────────────────────────────────────────────────────────────────
+# .env holds the MySQL password and any search-provider API keys. .env.example
+# is committed instead, so a fresh clone knows what to set without ever having
+# the real values in history — where they would be permanent even after deletion.
+.env
+.env.local
+
+# ── local data, never shared ─────────────────────────────────────────────────
+# The SQLite call history and the ephemeral live-progress files. Machine-specific
+# and regenerated on demand; committing them would also commit every prompt and
+# response ever recorded.
+.local-llm-data/
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# ── Node / Next.js ───────────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# ── editors and OS ───────────────────────────────────────────────────────────
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

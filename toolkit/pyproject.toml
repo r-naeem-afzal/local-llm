@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "local-llm-toolkit"
+version = "0.1.0"
+description = "Delegate mechanical work to a local OpenAI-compatible model, with full call observability."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+# Core stays deliberately small so `pip install` is quick on a slow connection.
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# Better article extraction: pulls the body text and drops nav/footer noise.
+# Separate because it drags in the lxml chain.
+extraction = ["trafilatura>=1.12"]
+# Dashboard API. The frontend is a separate Next.js app.
+api = ["fastapi>=0.111", "uvicorn>=0.30"]
+# Host monitoring: GPU via NVML, RAM and per-process stats via psutil.
+monitor = ["psutil>=5.9", "nvidia-ml-py>=12.555"]
+# Expose the tools to an MCP client such as Claude Code.
+mcp = ["mcp>=1.2"]
+# MySQL / MariaDB backend. PyMySQL is a pure-Python driver, so it needs no compiler
+# and no MySQL client libraries installed — which matters on Windows, where the
+# C-based alternatives require a build toolchain.
+mysql = ["PyMySQL>=1.1"]
+all = [
+    "local-llm-toolkit[extraction,api,monitor,mcp,mysql]",
+]
+
+# No [project.scripts] yet. An earlier version declared `local-llm = "local_llm.cli:main"`
+# with no cli module behind it, so the installed command failed with ModuleNotFoundError.
+# Better to ship no entry point than a broken one.
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/local_llm"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
