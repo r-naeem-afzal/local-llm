@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from functools import cached_property
 
+from .agents import AgentActivityReader, AgentTranscriptScanner
 from .client import LocalLLMClient
 from .config import Settings
 from .database import DatabaseBackend, build_backend
@@ -35,6 +36,7 @@ from .monitor import (
     ModelRegistry,
     ModelServerProbe,
     SystemMonitor,
+    TranscriptLocator,
 )
 from .store import (
     ConnectionProvider,
@@ -142,8 +144,34 @@ class Toolkit:
         return ModelServerProbe(self._settings)
 
     @cached_property
+    def transcript_locator(self) -> TranscriptLocator:
+        """Shared by the two readers that consume Claude Code's transcripts.
+
+        One instance so both agree on where the transcripts are; it holds no cache, so
+        sharing it is about consistency rather than cost.
+        """
+        return TranscriptLocator(self._settings)
+
+    @cached_property
     def usage_reader(self) -> ClaudeUsageReader:
-        return ClaudeUsageReader(self._settings)
+        return ClaudeUsageReader(self._settings, self.transcript_locator)
+
+    @cached_property
+    def agent_scanner(self) -> AgentTranscriptScanner:
+        """A singleton because its whole value is the state it accumulates.
+
+        The scanner remembers how far into each transcript it has read. Two instances
+        would each re-read every file from the start, which is precisely the cost the
+        byte-offset tailing exists to avoid — so this must be one shared object, not a
+        fresh one per request.
+        """
+        return AgentTranscriptScanner()
+
+    @cached_property
+    def agent_reader(self) -> AgentActivityReader:
+        return AgentActivityReader(
+            self._settings, self.transcript_locator, self.agent_scanner
+        )
 
     @cached_property
     def monitor(self) -> SystemMonitor:

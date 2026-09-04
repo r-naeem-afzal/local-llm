@@ -58,5 +58,24 @@ React + TypeScript on Next.js for any interface.
 
 ## Cost discipline
 
-Claude effort `high` at most. No subagent fan-out for cost. Delegate mechanical work to
-the local models via the toolkit; Claude spends its usage on judgement only.
+Claude effort `high` at most. Delegate mechanical work to the local models via the
+toolkit; Claude spends its usage on judgement only.
+
+**Subagent fan-out is allowed**, on conditions. This rule replaced a blanket "no fan-out
+for cost", which rested on a mistake: running agents in parallel costs roughly the same
+total plan usage as running the same work sequentially, it simply finishes sooner. Cost
+was never the argument. The two conditions are:
+
+1. **Agent activity is being watched live.** The dashboard's Claude agents panel exists
+   for this. Agents that run invisibly reintroduce exactly the blind spot this toolkit
+   was built to remove.
+2. **A batch is small enough that it cannot exhaust the 5-hour window.** Two or three
+   agents for one step, not a dozen. The failure being avoided is an exhausted allowance
+   with the work half-finished, which is worse than the work merely taking longer.
+
+One measured fact makes the first condition necessary rather than decorative: a
+**foreground** subagent's token usage is billed to the window but written to no local
+record at all, so any total computed on this machine is a floor whenever agents have run.
+A **background** agent (`run_in_background: true`) is the exception — its completion
+notification reports its real token count — so prefer background agents when the spend
+needs to be accounted for. See `toolkit/src/local_llm/agents.py` for the measurements.

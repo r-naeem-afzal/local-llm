@@ -29,6 +29,7 @@ import json
 import os
 import subprocess
 import time
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,6 +42,120 @@ from .config import Settings
 # The plan allowance resets on a rolling 5-hour window, so this is the only window size
 # that answers "how much have I got left right now".
 USAGE_WINDOW_HOURS = 5
+
+
+# ─────────────────────────── shared transcript access ───────────────────────────
+
+
+def parse_iso_timestamp(value: Any) -> datetime | None:
+    """Parse the transcript's ISO timestamps into timezone-aware datetimes.
+
+    Transcripts use a trailing 'Z' for UTC, which `fromisoformat` did not accept before
+    Python 3.11, so it is rewritten to the '+00:00' form that always works.
+
+        "2026-09-04T19:22:31.863Z"  ->  datetime(2026,9,4,19,22,31,863000, tz=utc)
+
+    Every caller compares the result against an aware "now", and comparing an aware to a
+    naive datetime raises TypeError — so a timestamp that cannot be made aware is returned
+    as None and dropped by the caller, rather than being allowed to crash a window
+    calculation with a type error far from the bad data.
+
+    A module-level function rather than a method because two unrelated readers — plan
+    usage and agent activity — both need it, and neither should have to reach into the
+    other's class to get it.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+class TranscriptLocator:
+    """Finds the Claude Code transcript files worth reading.
+
+    Claude Code appends one JSON object per line to
+    `~/.claude/projects/<project-dir>/<session-id>.jsonl`. Everything this toolkit knows
+    about plan spend and agent activity comes from those files, so *where they are* and
+    *which ones are recent* is a concern two different readers share.
+
+    It is its own class for exactly that reason: plan usage and live agent activity both
+    need this and nothing else about each other. Without it, the second reader would
+    duplicate the home-directory resolution and the modification-time pre-filter, and the
+    two copies would drift — the usual outcome being one of them silently reading the
+    wrong directory after a settings change.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    def projects_dir(self) -> Path:
+        """The directory holding one subdirectory per project.
+
+        Overridable through settings so a test can point at a fixture tree; otherwise the
+        fixed location Claude Code writes to.
+        """
+        if self._settings.claude_projects_dir:
+            return self._settings.claude_projects_dir
+        return Path(os.path.expanduser("~")) / ".claude" / "projects"
+
+    def recent_transcripts(self, since: datetime,
+                           project: str | None = None) -> Iterator[tuple[str, Path]]:
+        """Yield (project directory name, transcript path) for files touched since `since`.
+
+            since = now - 5h
+              ->  ("c--Work-Personal-Ideas-local-llm", .../ded195c6-….jsonl)
+
+        The modification-time check is a deliberate cheap pre-filter: a file untouched
+        since before the window opened cannot hold a record inside it, so it is skipped
+        without reading a single byte. That matters because transcripts are megabytes each
+        and there can be dozens of them — without this the dashboard's own polling becomes
+        the most expensive process on the machine.
+
+        Yields nothing at all if the projects directory is absent; callers report that as
+        an error state, since "no transcripts" and "no spend" must not look the same.
+        """
+        root = self.projects_dir()
+        if not root.exists():
+            return
+
+        if project:
+            directories = [root / project]
+        else:
+            # Every project by default, because the plan allowance is per account, not per
+            # project. Filtering to one would under-report what has been spent, which is
+            # the opposite of useful when the question is "how much is left".
+            try:
+                directories = [entry for entry in root.iterdir() if entry.is_dir()]
+            except OSError:
+                # `exists()` passing does not mean the path can be listed: a configured
+                # `claude_projects_dir` pointing at a *file* raises NotADirectoryError
+                # here, and an unreadable directory raises PermissionError. Unguarded,
+                # that exception escapes the reader and turns the endpoint into a 500 —
+                # so a monitoring feature would take down the dashboard it feeds.
+                return
+
+        for directory in directories:
+            if not directory.is_dir():
+                continue
+            try:
+                transcripts = list(directory.glob("*.jsonl"))
+            except OSError:
+                # Same reasoning as above, per directory: one unreadable project must not
+                # hide every other project's sessions.
+                continue
+            for transcript in transcripts:
+                try:
+                    modified = datetime.fromtimestamp(transcript.stat().st_mtime, timezone.utc)
+                except OSError:
+                    # The file vanished between the glob and the stat — a session ending,
+                    # or a cleanup pass. Not an error worth surfacing.
+                    continue
+                if modified < since:
+                    continue
+                yield directory.name, transcript
 
 
 # ─────────────────────────── GPU ───────────────────────────
@@ -466,8 +581,19 @@ class UsageRecord:
     ts: datetime
     model: str
     # True when the message was produced by a subagent rather than the main conversation
-    # loop. This single flag is the entire reason "which agents ran and what did they
-    # cost" is an answerable question.
+    # loop.
+    #
+    # **Measured 2026-09-05: on this machine this flag is never set.** Claude Code
+    # 2.1.260 writes no `isSidechain` record and no transcript of its own for a subagent —
+    # across every transcript in every project here, the count of sidechain records is
+    # zero, including sessions that demonstrably ran subagents. Subagent tokens are billed
+    # to the 5-hour window but appear in no local file.
+    #
+    # The flag is kept rather than deleted because other Claude Code versions and
+    # entrypoints do emit it, and reading it costs nothing. What must not happen is
+    # someone treating an empty `subagents` bucket as proof that no subagents ran, or as
+    # proof they were free. See `agents.py`, which answers "what is running now" from the
+    # `Agent` tool-call records that *are* written.
     is_subagent: bool
     input_tokens: int
     output_tokens: int
@@ -481,6 +607,11 @@ class ClaudeUsage:
     window_start: str
     messages: int = 0
     main_loop: dict[str, AgentUsage] = field(default_factory=dict)
+    # Empty on this machine, and not because subagents are cheap — see the note on
+    # `UsageRecord.is_subagent`. Subagent spend is real but absent from the transcripts,
+    # so these totals are a floor on plan usage whenever agents have run, never a
+    # complete figure. The dashboard says so rather than letting the number be read as
+    # exact.
     subagents: dict[str, AgentUsage] = field(default_factory=dict)
     sessions: int = 0
     error: str = ""
@@ -564,6 +695,12 @@ class TranscriptParser:
             # correct; the next poll will see it complete.
             return None
 
+        if not isinstance(raw, dict):
+            # Valid JSON but not an object — a bare number, string or array. `.get` on
+            # those raises AttributeError, which the JSONDecodeError guard above does not
+            # catch, so one odd line would break the whole file's parse.
+            return None
+
         if raw.get("type") != "assistant":
             return None
         message = raw.get("message") or {}
@@ -592,24 +729,9 @@ class TranscriptParser:
 
     @staticmethod
     def _parse_iso(value: Any) -> datetime | None:
-        """Parse the transcript's ISO timestamps into timezone-aware datetimes.
-
-        Transcripts use a trailing 'Z' for UTC, which `fromisoformat` did not accept
-        before Python 3.11, so it is rewritten to the '+00:00' form that always works.
-
-            "2026-09-04T19:22:31.863Z"  ->  datetime(2026,9,4,19,22,31,863000, tz=utc)
-
-        Everything downstream compares against an aware "now", and comparing an aware to
-        a naive datetime raises TypeError — so a timestamp that cannot be made aware is
-        dropped rather than allowed to crash the window calculation.
-        """
-        if not isinstance(value, str):
-            return None
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        """Kept as a method so existing callers keep working; the logic now lives in
+        `parse_iso_timestamp`, because the agent-activity reader needs the same rule."""
+        return parse_iso_timestamp(value)
 
 
 class ClaudeUsageReader:
@@ -621,14 +743,11 @@ class ClaudeUsageReader:
     block locally, as it happens.
     """
 
-    def __init__(self, settings: Settings, parser: TranscriptParser | None = None) -> None:
+    def __init__(self, settings: Settings, locator: TranscriptLocator | None = None,
+                 parser: TranscriptParser | None = None) -> None:
         self._settings = settings
+        self._locator = locator or TranscriptLocator(settings)
         self._parser = parser or TranscriptParser()
-
-    def _projects_dir(self) -> Path:
-        if self._settings.claude_projects_dir:
-            return self._settings.claude_projects_dir
-        return Path(os.path.expanduser("~")) / ".claude" / "projects"
 
     def read(self, window_hours: int = USAGE_WINDOW_HOURS,
              project: str | None = None) -> ClaudeUsage:
@@ -641,41 +760,36 @@ class ClaudeUsageReader:
         started = datetime.now(timezone.utc) - timedelta(hours=window_hours)
         usage = ClaudeUsage(window_hours=window_hours, window_start=started.isoformat())
 
-        root = self._projects_dir()
+        root = self._locator.projects_dir()
         if not root.exists():
+            # Reported rather than returned as a zero, because "no transcripts here" and
+            # "nothing has been spent" are very different answers and must not look
+            # identical on the dashboard.
             usage.error = f"no Claude transcripts at {root}"
             return usage
 
-        directories = [root / project] if project else [d for d in root.iterdir() if d.is_dir()]
-        for directory in directories:
-            if directory.is_dir():
-                self._read_directory(directory, started, usage)
-        return usage
-
-    def _read_directory(self, directory: Path, started: datetime, usage: ClaudeUsage) -> None:
-        for transcript in directory.glob("*.jsonl"):
-            # Cheap pre-filter: a file untouched since before the window opened cannot
-            # hold a message inside it. This skips old sessions without reading a single
-            # byte, which matters because transcripts are megabytes each and there are
-            # many of them.
+        for _project, transcript in self._locator.recent_transcripts(started, project):
             try:
-                if datetime.fromtimestamp(transcript.stat().st_mtime, timezone.utc) < started:
-                    continue
                 records = self._parser.parse(transcript)
             except OSError:
                 continue
-
-            counted = 0
-            for record in records:
-                if record.ts < started:
-                    continue
-                bucket = usage.subagents if record.is_subagent else usage.main_loop
-                bucket.setdefault(record.model, AgentUsage(model=record.model)).add(record)
-                usage.messages += 1
-                counted += 1
-
-            if counted:
+            if self._accumulate(records, started, usage):
                 usage.sessions += 1
+
+        return usage
+
+    def _accumulate(self, records: list[UsageRecord], started: datetime,
+                    usage: ClaudeUsage) -> bool:
+        """Fold one transcript's records into the totals. Returns whether any counted."""
+        counted = 0
+        for record in records:
+            if record.ts < started:
+                continue
+            bucket = usage.subagents if record.is_subagent else usage.main_loop
+            bucket.setdefault(record.model, AgentUsage(model=record.model)).add(record)
+            usage.messages += 1
+            counted += 1
+        return counted > 0
 
 
 # ─────────────────────────── composition ───────────────────────────

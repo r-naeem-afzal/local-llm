@@ -69,6 +69,13 @@ from .extract import (
     SourceExtraction,
     TrafilaturaExtractor,
 )
+from .agents import (
+    ActiveAgent,
+    AgentActivity,
+    AgentActivityReader,
+    AgentInvocation,
+    AgentTranscriptScanner,
+)
 from .monitor import (
     AgentUsage,
     ClaudeUsage,
@@ -82,6 +89,7 @@ from .monitor import (
     ModelRegistry,
     ModelServerProbe,
     SystemMonitor,
+    TranscriptLocator,
     TranscriptParser,
     UsageRecord,
 )
@@ -152,11 +160,18 @@ __all__ = [
     "LmsCommandRunner",
     "ClaudeUsageReader",
     "TranscriptParser",
+    "TranscriptLocator",
     "GpuInfo",
     "HostInfo",
     "LoadedModel",
     "ClaudeUsage",
     "AgentUsage",
     "UsageRecord",
+    # live Claude agent activity
+    "AgentActivityReader",
+    "AgentTranscriptScanner",
+    "AgentActivity",
+    "ActiveAgent",
+    "AgentInvocation",
     "__version__",
 ]

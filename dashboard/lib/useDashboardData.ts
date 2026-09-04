@@ -3,7 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiClient } from "./ApiClient";
-import type { CallRecord, ClaudeUsage, LiveCall, Stats, SystemSnapshot } from "./types";
+import type {
+  AgentActivity,
+  CallRecord,
+  ClaudeUsage,
+  LiveCall,
+  Stats,
+  SystemSnapshot,
+} from "./types";
 
 /**
  * Everything the dashboard shows, refreshed when the server says something changed.
@@ -29,12 +36,29 @@ import type { CallRecord, ClaudeUsage, LiveCall, Stats, SystemSnapshot } from ".
 /** How often to re-read live progress while something is generating. */
 const LIVE_POLL_MS = 900;
 
+/**
+ * How often to re-read Claude agent activity.
+ *
+ * This timer runs **unconditionally**, unlike the live-progress one below which only runs
+ * while something is in flight. That difference is the whole point of the panel: the event
+ * most worth knowing about is an agent *starting*, and that by definition happens while
+ * the list is empty. A timer that only ran when agents were already known could never
+ * discover the first one, and the panel would stay empty until some unrelated change
+ * happened to trigger an SSE refresh.
+ *
+ * Slower than the live poll because agents last tens of seconds to minutes, not
+ * milliseconds, and each request makes the server stat a directory of transcripts.
+ */
+const AGENTS_POLL_MS = 2000;
+
 export interface DashboardData {
   system: SystemSnapshot | null;
   usage: ClaudeUsage | null;
   calls: CallRecord[];
   stats: Stats | null;
   live: LiveCall[];
+  /** Claude agents running now, plus any that finished within the server's window. */
+  agents: AgentActivity | null;
   /** True until the first load completes, so panels can show a skeleton not an error. */
   loading: boolean;
   /** Set when the API is unreachable — almost always "the server is not running". */
@@ -56,6 +80,7 @@ export function useDashboardData(): DashboardData {
   const [calls, setCalls] = useState<CallRecord[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [live, setLive] = useState<LiveCall[]>([]);
+  const [agents, setAgents] = useState<AgentActivity | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
@@ -63,6 +88,10 @@ export function useDashboardData(): DashboardData {
   // Tracks whether the component is still mounted. Without it, a fetch that resolves
   // after the user navigates away would call setState on an unmounted component — a
   // React warning at best, and a memory leak in a long-lived tab.
+  // Guards against overlapping agent polls — see refreshAgents. A ref rather than state
+  // because changing it must not re-render.
+  const agentsInFlight = useRef(false);
+
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -118,11 +147,34 @@ export function useDashboardData(): DashboardData {
     }
   }, [client]);
 
+  const refreshAgents = useCallback(async () => {
+    // Skip if the previous request has not come back yet. Each `/agents` call makes the
+    // server stat a directory of transcripts, so if one ever takes longer than the poll
+    // interval, requests would pile up and their responses could be applied out of order
+    // — briefly rendering an older agent list over a newer one.
+    if (agentsInFlight.current) return;
+    agentsInFlight.current = true;
+    try {
+      const response = await client.agents();
+      if (mounted.current) setAgents(response);
+    } catch {
+      // Swallowed for the same reason as live progress: this is replaced within two
+      // seconds, so a transient failure must not flash an error over a working page.
+      // Deliberately *not* cleared to null either — keeping the last known agent list is
+      // better than blanking a panel someone is watching because one poll failed.
+    } finally {
+      // `finally`, so a thrown request cannot leave the flag stuck true and stop the
+      // panel updating for the rest of the page's life.
+      agentsInFlight.current = false;
+    }
+  }, [client]);
+
   // First load.
   useEffect(() => {
     void refresh();
     void refreshLive();
-  }, [refresh, refreshLive]);
+    void refreshAgents();
+  }, [refresh, refreshLive, refreshAgents]);
 
   // The change-notification stream.
   useEffect(() => {
@@ -168,12 +220,21 @@ export function useDashboardData(): DashboardData {
     // depending on the array itself would clear and recreate the timer each time.
   }, [live.length, refreshLive]);
 
+  // Poll Claude agent activity always — see AGENTS_POLL_MS for why this one is not
+  // conditional. The cost of being wrong in the other direction is the panel never
+  // noticing an agent start, which is the single thing it exists to do.
+  useEffect(() => {
+    const timer = setInterval(() => void refreshAgents(), AGENTS_POLL_MS);
+    return () => clearInterval(timer);
+  }, [refreshAgents]);
+
   return {
     system,
     usage,
     calls,
     stats,
     live,
+    agents,
     loading,
     error,
     connected,
@@ -181,6 +242,7 @@ export function useDashboardData(): DashboardData {
     refresh: () => {
       void refresh();
       void refreshLive();
+      void refreshAgents();
     },
   };
 }

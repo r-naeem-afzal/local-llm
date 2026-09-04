@@ -2,7 +2,9 @@
 
 Delegate the mechanical share of the work to a local model on your own GPU, with full
 visibility into what it did — and see that alongside what the metered Claude plan cost in
-the same window.
+the same window. The local half of that picture is complete. The Claude half is a floor,
+because a foreground subagent's usage is billed to the window but written to no local
+record; see [What is not built yet](#what-is-not-built-yet).
 
 The premise is a cost one. A thorough research run through Claude spends roughly 55 agents,
 most of them doing nothing but fetching a page and pulling claims out of it. That is
@@ -122,8 +124,30 @@ taste: each tool is a job whose answer is **contained in the text the model is h
 Asked instead to explain undocumented intent — why a particular design choice was made —
 a local model produces confident invention. That shape of task is not offered.
 
+## Claude agent monitoring
+
+The dashboard's first panel shows which Claude Code agents are running right now — type,
+description, elapsed time, tokens — and raises a toast when one starts, finishes or fails.
+`GET /agents` serves it; `python scripts/agent_probe.py --watch` shows the same thing in a
+terminal.
+
+It reads the `Agent` tool calls in Claude Code's own transcripts, because the obvious
+mechanism does not exist: `isSidechain` is never set on this version, and subagents write
+no transcript of their own. One consequence is worth knowing before trusting any number
+here. A **background** agent (`run_in_background: true`) reports its real token usage when
+it completes, so those figures are measured. A **foreground** agent's usage is recorded
+nowhere, so its figure is estimated from prompt and result size — which understates by
+roughly thirteen times. Estimated rows are marked with `~` and never summed with measured
+ones.
+
 ## What is not built yet
 
 `search.py` (pluggable Brave / SearXNG / DuckDuckGo) and `pipeline.py` (the credit-free
-research orchestrator). `toolkit/STATUS.md` is the current handoff, and records what has
-been measured rather than assumed.
+research orchestrator).
+
+Also unbuilt, and unbuildable rather than merely pending: any accounting of foreground
+subagent spend. The usage panel's `subagent_messages` figure is derived from `isSidechain`
+and is therefore structurally always zero — it means "not visible", never "not incurred".
+
+`toolkit/STATUS.md` is the current handoff, and records what has been measured rather than
+assumed.

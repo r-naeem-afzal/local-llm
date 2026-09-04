@@ -11,7 +11,9 @@ and eventually ship it as a reusable, `.env`-configured package.
 
 Constraints this design has to respect:
 
-- Claude effort stays at `high` at most; no subagent fan-out for cost reasons.
+- Claude effort stays at `high` at most. Subagent fan-out is now permitted, because
+  parallel agents cost about the same total usage as sequential ones and finish sooner —
+  provided activity is watched live and a batch cannot exhaust the 5-hour window.
 - Plan usage resets on a 5-hour rolling window, so consumption must be visible.
 - 16 GB VRAM total. One 14B model at a time, plus a small model at most.
 - Model downloads are the user's job via the Bionic GUI, not the CLI.
@@ -55,10 +57,12 @@ and a worked example at every data transformation.
 | `store.py` | OK | `ConnectionProvider`, `SchemaMigrator`, `SqlCallRepository`, `FileLiveProgressStore`, `RetentionService` |
 | `client.py` | OK | `StreamAccumulator`, `ProgressReporter`, `ThinkingStripper`, `JsonResponseParser`, `LocalLLMClient` |
 | `extract.py` | OK | `TrafilaturaExtractor`, `RegexExtractor`, `ExtractorChain`, `PageFetcher`, `PromptLibrary`, `ClaimExtractor`, `ResultRanker` |
-| `monitor.py` | OK | `GpuProbe`, `HostProbe`, `LmsCommandRunner`, `ModelRegistry`, `ModelServerProbe`, `TranscriptParser`, `ClaudeUsageReader`, `SystemMonitor` |
-| `api.py` | OK | `SystemRoutes`, `HistoryRoutes`, `MaintenanceRoutes`, `DashboardApi` |
+| `monitor.py` | OK | `GpuProbe`, `HostProbe`, `LmsCommandRunner`, `ModelRegistry`, `ModelServerProbe`, `TranscriptLocator`, `TranscriptParser`, `ClaudeUsageReader`, `SystemMonitor` |
+| `agents.py` | OK | `AgentInvocation`, `AgentTranscriptScanner`, `ActiveAgent`, `AgentActivity`, `AgentActivityReader` |
+| `api.py` | OK | `SystemRoutes`, `AgentRoutes`, `HistoryRoutes`, `MaintenanceRoutes`, `DashboardApi` |
 | `container.py` | OK | `Toolkit` |
 | `scripts/smoke_test.py` | OK | `SmokeTest` — run this first on resume |
+| `scripts/agent_probe.py` | OK | `AgentProbe` — the live agent view without the UI |
 
 Usage is now via the composition root:
 
@@ -149,6 +153,12 @@ in-flight call under `.local-llm-data/live/`.
 
    Note the SDK moved: `mcp` is 2.1.1, where `FastMCP` became `MCPServer`
    (`from mcp.server.mcpserver import MCPServer`). v1 examples will not import.
+4. **Foreground subagent cost cannot be accounted for, and the metric that was meant to
+   account for it is dead.** `subagent_messages` in the usage panel is derived from
+   `isSidechain`, which is never set, so it reads zero whether ten agents ran or none —
+   and a zero reads as reassurance rather than as "not visible". Background agents report
+   real usage and `agents.py` now reads it; foreground agents are unavailable at any
+   price. This one is not fixable here, only labelled, and the dashboard now labels it.
 
 ## Next steps, in order
 
@@ -165,20 +175,67 @@ in-flight call under `.local-llm-data/live/`.
    cited markdown report. Cap concurrency at 2; one GPU.
 6. ~~`mcp_server.py`~~ — **done and verified.** Four tools: `local_extract_claims`,
    `local_rank_results`, `local_complete`, `local_status`.
-7. **A live view of currently-active Claude agents in the dashboard.** The existing
-   `/usage` panel is retrospective — it sums the 5-hour window from transcripts. It does
-   not show what is running *now*, which is the stated condition for using subagent
-   fan-out at all. Implementable from the same transcripts: a sidechain with a message in
-   the last N seconds is an active agent.
+7. ~~A live view of currently-active Claude agents in the dashboard~~ — **done and
+   verified live.** `agents.py`, `GET /agents`, and the dashboard's Claude agents panel
+   with start/finish/fail notifications. The planned implementation had to be thrown
+   away: "a sidechain with a recent message is an active agent" cannot work, because no
+   sidechain record is ever written, so it would have reported zero agents for ever while
+   looking like working code.
 
-### Claude plan usage is measurable locally
+   What works instead is the `Agent` tool call itself. An `assistant` record carries a
+   `tool_use` block named `Agent` with the `subagent_type`, `description` and `model`;
+   the agent is running until its ending arrives. **Foreground and background agents end
+   differently, and this is the trap:** a background launch gets a `tool_result` within
+   about two seconds that is only an acknowledgement it started, not its report. Taking
+   that at face value marked two agents finished after 1.6 s and 2.2 s when they in fact
+   ran for four minutes and two — so `running` read 0 while agents were running, which is
+   the single number the panel exists to provide. A background agent's real ending is its
+   task notification; a foreground agent's is its `tool_result`.
+
+   Verified live with real agents: `running 1` with elapsed climbing 5.6 s → 15.0 s →
+   24.4 s → 2m 26s, two parallel agents as two distinct rows, measured tokens on the
+   background pair, and the degraded paths (projects directory missing, pointing at a
+   file, or holding malformed JSONL) all returning empty rather than a 500.
+
+### Claude plan usage is only partly measurable locally — corrected 2026-09-05
 
 `~/.claude/projects/<project>/<session>.jsonl` records every assistant message with a
-`usage` block, and `isSidechain` marks messages produced by a subagent rather than the
-main loop. That is what makes "show me the agents and what they cost" implementable:
-sum `input_tokens` / `output_tokens` / cache fields over a 5-hour window, split by
-`isSidechain`. Parsed transcripts should be cached by mtime and size — the current
-session file is already over 1 MB.
+`usage` block, so **main-loop** consumption over a 5-hour window is summable, and that
+part works.
+
+The rest of the earlier note was wrong, and wrong in the direction that matters.
+`isSidechain` does not do what it says: measured across every transcript in every project
+on this machine (Claude Code 2.1.260), **it is never true**. Subagents write no sidechain
+records and no transcript of their own. So the plan to "split by `isSidechain`" produces
+one bucket holding everything and a second permanently empty — which is why the
+dashboard's `subagent_messages` metric has always read zero, and why that zero must not
+be read as "no agents ran".
+
+The consequence for budgeting: a **foreground** subagent's tokens are billed to the
+5-hour window and recorded nowhere at all, so any total computed here is a *floor*
+whenever agents have run.
+
+**Background agents are the exception, and the only usable route.** An agent launched
+with `run_in_background: true` reports its real usage when it completes, in a
+task-notification record:
+
+```xml
+<task-notification>
+  <tool-use-id>toolu_011hr…</tool-use-id>
+  <status>completed</status>
+  <usage><subagent_tokens>55343</subagent_tokens><tool_uses>7</tool_uses>
+         <duration_ms>113246</duration_ms></usage>
+</task-notification>
+```
+
+It arrives as an `attachment` record whose `prompt` holds that block (also seen on a
+`queue-operation` record, so `agents.py` checks both shapes). Measured on two real runs:
+**55,343 and 83,526 tokens**.
+
+Parsed transcripts should still be cached by mtime and size — the current session file is
+already over 1 MB. `AgentTranscriptScanner` goes further and tails by byte offset, because
+the agent panel polls every two seconds and re-reading a megabyte each time would make
+the monitoring more expensive than the work it monitors.
 
 ## Fixed: the reasoning channel was being discarded
 
@@ -238,6 +295,23 @@ display that sums tokens without separating cache reads from fresh input will ov
 real spend by roughly fifty times. `monitor.py` keeps the four categories apart for
 exactly this reason.
 
+**The error runs both ways, and the second direction is new.** Separating cache reads
+stops a fiftyfold *overstatement*. Nothing corrects the opposite gap: whatever a
+foreground subagent spent is missing from all four categories, so during any session in
+which agents ran the headline is a lower bound. Both facts belong together, because
+knowing only one of them leaves a reader confidently wrong.
+
+**Estimating an agent's cost from character counts understates it by about thirteen
+times.** Sizing an agent from the characters of its prompt plus the characters of its
+returned report is the only option for a foreground agent, and it is a poor one: one
+background agent reported 55,343 tokens where prompt and report together came to roughly
+16,700 characters, which that method would have put at about 4,200. The reason is
+structural — a report is a summary of work whose intermediate file reads, tool results and
+reasoning appear at neither end. `agents.py` shows such figures with a `~` and never sums
+them with measured ones. Treat any budgeting done this way as a lower bound, and prefer
+launching agents in the background where there is a choice, since the cost then stops
+being guesswork.
+
 ## Resume checklist
 
 ```powershell
@@ -245,6 +319,7 @@ lms server start          # if the server is down; run TWICE from cold
 lms ps                    # confirm Qwen3 14B is loaded
 cd C:\Work\Personal\Ideas\local-llm\toolkit
 python scripts\smoke_test.py
+python scripts\agent_probe.py --watch   # the live Claude agent view, no UI needed
 ```
 
-If the smoke test passes, pick up at step 1 above.
+If the smoke test passes, pick up at step 4 above — `search.py`.

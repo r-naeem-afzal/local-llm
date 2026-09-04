@@ -5,8 +5,8 @@ database lives on the machine running the models, a browser cannot open a local 
 putting the queries here means the aggregation and retention logic exists once instead of
 being duplicated in TypeScript.
 
-The routes are grouped into router classes — `SystemRoutes`, `HistoryRoutes`,
-`MaintenanceRoutes` — each taking only the collaborators it actually needs. FastAPI wants
+The routes are grouped into router classes — `SystemRoutes`, `AgentRoutes`,
+`HistoryRoutes`, `MaintenanceRoutes` — each taking only the collaborators it needs. FastAPI wants
 functions as handlers, so each class registers bound methods on a router in
 `register()`. That keeps the dependency-injection shape while giving the framework what
 it expects, and it means a route can never quietly reach for a service it was not given.
@@ -31,6 +31,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from .agents import AgentActivityReader
 from .container import Toolkit
 from .monitor import USAGE_WINDOW_HOURS, ClaudeUsageReader, SystemMonitor
 from .store import CallRepository, LiveProgressStore, RetentionService
@@ -95,6 +96,50 @@ class SystemRoutes:
         session file on the machine.
         """
         return self._usage_reader.read(window_hours=hours, project=project).as_dict()
+
+
+class AgentRoutes:
+    """Which Claude agents are running right now.
+
+    A router of its own rather than a fourth method on `SystemRoutes`, because that class
+    is about *this machine* — its GPU, its RAM, its model server — and this is about
+    Claude. Keeping them apart is interface segregation in the plainest sense: neither
+    class grows a collaborator it never uses, and a change to agent monitoring cannot
+    break the health check the dashboard relies on to say the API is up.
+    """
+
+    def __init__(self, agent_reader: AgentActivityReader) -> None:
+        self._agent_reader = agent_reader
+
+    def register(self, router: APIRouter) -> None:
+        router.add_api_route("/agents", self.agents, methods=["GET"])
+
+    def agents(
+        self,
+        window_s: float = Query(default=0.0, ge=0.0, le=3600.0),
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        """Agents running now, plus those that finished within the display window.
+
+        `window_s` is how long a finished agent stays in the response; 0 means "use the
+        configured default". A finished agent lingers rather than disappearing because the
+        dashboard notices a completion by watching a row change status — a row that
+        vanishes at the instant it completes can never be seen to complete, so the
+        notification would never fire.
+
+        The token figures in the response are **estimates**, and the `tokens_estimated`
+        flag says so. Subagent token usage is written to no local file on this machine, so
+        the estimate comes from the size of the prompt in and the report out; an agent's
+        own reading is invisible to it. See `agents.py` for the measurement behind that.
+        """
+        return self._agent_reader.read(
+            # 0 rather than None as the sentinel because a query parameter typed
+            # `float | None` would let a caller send `window_s=` and get a validation
+            # error instead of the default, which is a confusing failure for a URL a
+            # human might type by hand.
+            window_s=window_s or None,
+            project=project,
+        ).as_dict()
 
 
 class HistoryRoutes:
@@ -406,6 +451,7 @@ class DashboardApi:
                 toolkit.settings.model,
                 toolkit.settings.url,
             ),
+            AgentRoutes(toolkit.agent_reader),
             HistoryRoutes(toolkit.repository, toolkit.live_store),
             MaintenanceRoutes(toolkit.retention, toolkit.repository),
         ]

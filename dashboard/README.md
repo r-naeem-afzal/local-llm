@@ -1,7 +1,9 @@
 # Local LLM Dashboard
 
-Live view of what the local models are doing, beside what the Claude plan has cost in the
-current 5-hour window. React + TypeScript on Next.js; it is a pure client of the Python
+Live view of what the local models are doing and which Claude agents are running, beside
+what the Claude plan has cost in the current 5-hour window — with the caveat that the plan
+figure is a floor, since a foreground subagent's usage is billed to the window but written
+to no local transcript. React + TypeScript on Next.js; it is a pure client of the Python
 API in `../toolkit`.
 
 ## Running
@@ -44,13 +46,21 @@ Two paths, for two kinds of data:
 
 ## Why the panels are ordered as they are
 
-Top to bottom answers the questions in the order they get asked: is anything happening
-now (Live) → can the machine do the work (GPU/Host/Models) → what did it cost, locally
-versus on the plan (Usage/Totals) → what happened earlier (History).
+Top to bottom answers the questions in the order they get asked: is a Claude fan-out
+running and what is it costing (Claude agents) → is a local call in flight (Live) → can
+the machine do the work (GPU/Host/Models) → what did it cost, locally versus on the plan
+(Usage/Totals) → what happened earlier (History).
+
+Claude agents comes first because, under the standing cost rule, it is the most expensive
+thing that can be happening — and because fan-out is only permitted while it is being
+watched, which makes this panel the thing that licenses the practice rather than merely
+reporting on it.
 
 Usage and Local totals sit together deliberately. The whole premise is that mechanical
 work moved off the metered plan onto the GPU, and that is only checkable with both numbers
-on one screen.
+on one screen. The comparison is directional rather than exact: the local figure is
+complete and the plan figure is a floor, so the real gap is at least as large as it looks
+and never smaller.
 
 ## Things the display is deliberate about
 
@@ -63,8 +73,28 @@ on one screen.
   tokens of which 72.2M were discounted cache *reads* and only 854 were fresh input. A
   single total would overstate real spend by roughly fifty times, so fresh input is the
   headline and cache traffic is shown separately.
-- **Subagent messages are coloured as a warning when non-zero.** Fan-out multiplies plan
-  spend and the standing rule is not to use it, so any value above zero should be noticed.
+- **The usage panel's subagent message count is known to be broken, and is labelled so.**
+  It counts messages flagged `isSidechain`, and that flag is never set on this version of
+  Claude Code, so the figure is structurally zero whether ten agents ran or none. A zero
+  there means "not visible", not "not incurred". The Claude agents panel is what actually
+  shows agent activity.
+- **Only some agent token figures are measurements.** A background agent reports its real
+  usage when it completes, so those rows are exact. A foreground agent's usage exists in no
+  local record, so its figure is estimated from prompt and result size — which understates
+  by roughly thirteen times. Estimated rows carry a `~` and are dimmed, because two numbers
+  an order of magnitude apart must not look alike in the same column.
+- **The Claude agents panel polls unconditionally, unlike the live panel.** The live-progress
+  timer only runs while a call is in flight, which is right for it. The agents timer cannot
+  work that way: the event worth being notified about is an agent *starting*, which by
+  definition happens while the list is empty, so a conditional timer could never discover
+  the first one.
+- **A finished agent lingers for about a minute before disappearing.** Not tidiness — a row
+  that vanished the instant it completed could never be *seen* to complete, so the finish
+  notification would have nothing to fire on.
+- **Notifications come in two layers.** In-page toasts are always on; desktop notifications
+  are opt-in behind a button, because browsers only honour a permission request that came
+  from a real click. The toasts exist so that a refused permission leaves the feature
+  visibly working rather than silently doing nothing.
 - **VRAM above 90% is amber, not red.** On a 16 GB card a single 14B model at 32K context
   occupies about 94%. That is the normal loaded state, and it means no second model will
   fit — not that something is wrong. Red starts at 97%.

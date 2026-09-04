@@ -157,11 +157,69 @@ export interface ClaudeUsage {
   window_start: string;
   sessions: number;
   messages: number;
+  /**
+   * Always 0 on this machine, and *not* because subagents are free.
+   *
+   * Claude Code 2.1.260 records no sidechain messages and writes no transcript for a
+   * subagent, so their tokens are billed to the 5-hour window but appear in no local
+   * file. These figures are therefore a floor on real spend whenever agents have run.
+   * `ActiveAgent` below is the live view built on the tool-call records that *are*
+   * written, and its token numbers are explicitly estimates.
+   */
   subagent_messages: number;
   total_tokens: number;
   main_loop: AgentUsage[];
-  /** Non-empty means subagents ran — which the standing cost rules say should be rare. */
   subagents: AgentUsage[];
+  error: string;
+}
+
+/**
+ * One Claude Code agent that is running now, or finished moments ago.
+ *
+ * Not to be confused with `AgentUsage` above, which it sits next to: that is
+ * retrospective token accounting per model over a 5-hour window, this is one live
+ * invocation of the `Agent` tool. The distinction matters because only one of them
+ * carries measured token counts, and it is not this one.
+ */
+export interface ActiveAgent {
+  /** The `tool_use_id`. Stable and unique, so it is what identifies a row across polls. */
+  key: string;
+  project: string;
+  session: string;
+  /** e.g. "Explore", "general-purpose" — the agent type that was launched. */
+  subagent_type: string;
+  /** The short human label the launcher wrote. Empty is possible. */
+  description: string;
+  /** Empty means the agent inherited the parent's model rather than naming one. */
+  model: string;
+  background: boolean;
+  /** "running" | "ok" | "error" — the same vocabulary `StatusBadge` already colours. */
+  status: string;
+  started_ts: string;
+  /** Null while still running. */
+  finished_ts: string | null;
+  elapsed_ms: number;
+  /**
+   * Tokens the agent spent — real when `tokens_measured`, otherwise a floor.
+   *
+   * A background agent's completion notification reports its true usage, so those rows
+   * are measured. A foreground agent's usage is recorded nowhere, so its figure is
+   * estimated from the size of the prompt in and the report out — which understates by
+   * roughly thirteen times, because an agent's spend is mostly the files it read.
+   */
+  tokens: number;
+  /** Whether `tokens` is a measurement. False means it is the estimate described above. */
+  tokens_measured: boolean;
+}
+
+export interface AgentActivity {
+  window_s: number;
+  agents: ActiveAgent[];
+  running: number;
+  finished: number;
+  errored: number;
+  /** True when at least one listed agent's tokens are an estimate rather than measured. */
+  tokens_estimated: boolean;
   error: string;
 }
 

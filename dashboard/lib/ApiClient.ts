@@ -1,4 +1,5 @@
 import type {
+  AgentActivity,
   CallPayload,
   CallsPage,
   ClaudeUsage,
@@ -60,6 +61,17 @@ export class ApiClient {
 
   live(): Promise<LiveResponse> {
     return this.get<LiveResponse>("/live");
+  }
+
+  /**
+   * Claude agents running now, plus those that finished within the display window.
+   *
+   * No argument: the server's configured window decides how long a finished agent
+   * lingers. Passing it from here would put the same policy in two places and let them
+   * disagree, and the browser has no better information about it than the server does.
+   */
+  agents(): Promise<AgentActivity> {
+    return this.get<AgentActivity>("/agents");
   }
 
   stats(): Promise<Stats> {

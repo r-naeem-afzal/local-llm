@@ -200,6 +200,28 @@ class Settings(BaseSettings):
     lms_path: Path | None = None
     claude_projects_dir: Path | None = None
 
+    # ── live Claude agent view ──
+    # How long a *finished* agent stays on the dashboard. Finished agents linger instead
+    # of vanishing because the dashboard detects a completion by watching a row change
+    # status, and a row that disappears the instant it finishes can never be seen to
+    # finish — the notification would never fire.
+    agent_window_s: float = Field(default=60.0, ge=5.0)
+    # How far back to look for transcripts holding a still-running agent. Deliberately
+    # much wider than the display window: a parent session writes nothing at all while it
+    # waits for an agent, so its transcript's modification time can be minutes old while
+    # the agent is very much alive. A tight scan window would skip that file and lose
+    # exactly the agents most worth watching.
+    agent_scan_hours: float = Field(default=6.0, ge=0.5)
+    # When a launch has no result after this long, treat it as dead rather than running.
+    # Needed because a session killed mid-agent leaves a tool call with no result *for
+    # ever*; without this the panel would report a phantom agent running for days, which
+    # destroys the credibility of the one number it exists to provide.
+    agent_stale_after_s: float = Field(default=3600.0, ge=60.0)
+    # Characters per token, for the agent cost *estimate* only. Subagent token usage is
+    # recorded nowhere on this machine (see agents.py), so the panel estimates from the
+    # prompt in and the report out. About 4 for English prose; lower for dense code.
+    agent_chars_per_token: float = Field(default=4.0, gt=0.0)
+
     @field_validator("url")
     @classmethod
     def _strip_trailing_slash(cls, value: str) -> str:
