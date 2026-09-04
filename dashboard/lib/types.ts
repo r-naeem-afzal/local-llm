@@ -64,6 +64,12 @@ export interface LiveCall {
   reasoning_chars?: number;
   /** Null while starting, because nothing has been generated to time yet. */
   elapsed_ms: number | null;
+  /**
+   * What this call is working on — the URL being read, or the question being ranked.
+   * Present so two concurrent calls of the same tool and model are tellable apart; empty
+   * for calls whose metadata carries neither.
+   */
+  subject?: string;
   tail: string;
 }
 

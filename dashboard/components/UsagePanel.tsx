@@ -1,5 +1,7 @@
 "use client";
 
+import { memo } from "react";
+
 import { formatTokens } from "@/lib/format";
 import type { AgentUsage, ClaudeUsage } from "@/lib/types";
 import { BigMetric, Metric, Panel } from "./ui";
@@ -21,7 +23,7 @@ import { BigMetric, Metric, Panel } from "./ui";
  *
  * So "fresh input" is the headline, and cache traffic is shown separately as context.
  */
-export function UsagePanel({ usage }: { usage: ClaudeUsage | null }) {
+function UsagePanelInner({ usage }: { usage: ClaudeUsage | null }) {
   if (!usage) {
     return (
       <Panel title="Claude usage">
@@ -128,3 +130,9 @@ function UsageRow({
     </tr>
   );
 }
+
+/**
+ * Memoized so a change in another panel's data cannot re-render this one. Without this,
+ * every 900 ms live-progress tick repainted the entire dashboard.
+ */
+export const UsagePanel = memo(UsagePanelInner);

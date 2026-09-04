@@ -62,6 +62,8 @@ from .extract import (
     Page,
     PageFetcher,
     PromptLibrary,
+    IndexRanking,
+    RankedIndex,
     RankedResult,
     Ranking,
     RegexExtractor,
@@ -135,6 +137,8 @@ __all__ = [
     "Page",
     "Ranking",
     "RankedResult",
+    "RankedIndex",
+    "IndexRanking",
     # persistence
     "CallRepository",
     "SqlCallRepository",

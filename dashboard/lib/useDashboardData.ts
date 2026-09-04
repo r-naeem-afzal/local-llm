@@ -37,6 +37,18 @@ import type {
 const LIVE_POLL_MS = 900;
 
 /**
+ * How long to keep polling after the live list empties.
+ *
+ * Without this, the timer stopped the instant the list came back empty — and a single
+ * empty reading is not proof that nothing is running. A progress file can be missed for
+ * one poll, or a call can sit between two generations. The panel then went idle and
+ * stayed idle until the next Server-Sent Event happened to revive it, turning one dropped
+ * frame into a visible gap. Six seconds of coasting costs a handful of requests and makes
+ * the panel stop blinking.
+ */
+const LIVE_IDLE_GRACE_MS = 6000;
+
+/**
  * How often to re-read Claude agent activity.
  *
  * This timer runs **unconditionally**, unlike the live-progress one below which only runs
@@ -51,6 +63,48 @@ const LIVE_POLL_MS = 900;
  */
 const AGENTS_POLL_MS = 2000;
 
+/**
+ * How many history rows to show at once.
+ *
+ * The panel used to render every one of the last 100 calls. That is a lot of DOM to
+ * rebuild whenever a call finishes, and — more to the point — a wall of rows nobody reads
+ * past the top of. A page of 25 fits a screen, and the endpoint has supported `limit` and
+ * `offset` since it was written, so paging costs no server work.
+ */
+const CALLS_PAGE_SIZE = 25;
+
+/**
+ * Update state only when the value actually changed.
+ *
+ * This is the fix for the dashboard visibly flickering whenever anything updated. The
+ * polling loops refetch every dataset on a timer, and `setState` with a *newly parsed*
+ * object is always a change as far as React is concerned — a fresh `JSON.parse` produces
+ * a new reference even when every byte is identical. So a live-progress tick every 900 ms
+ * replaced `system`, `usage`, `calls` and `stats` as well, and re-rendered the GPU panel,
+ * the usage tables and a hundred rows of history along with it. The screen was rebuilding
+ * itself roughly once a second, all of it, for data that had not moved.
+ *
+ * Comparing the serialised form and keeping the previous reference means an unchanged
+ * dataset produces no state update at all, so React never re-renders the panels that read
+ * it. Together with `React.memo` on the panels themselves, only the panel whose data
+ * genuinely moved repaints.
+ *
+ * The cost is a `JSON.stringify` per dataset per poll. That is far cheaper than the
+ * render it prevents, and it runs on data that was just parsed from exactly this format.
+ */
+function useChangeGuard<T>(setter: (value: T) => void): (value: T) => void {
+  const previous = useRef<string | undefined>(undefined);
+  return useCallback(
+    (value: T) => {
+      const serialised = JSON.stringify(value);
+      if (serialised === previous.current) return;
+      previous.current = serialised;
+      setter(value);
+    },
+    [setter],
+  );
+}
+
 export interface DashboardData {
   system: SystemSnapshot | null;
   usage: ClaudeUsage | null;
@@ -59,6 +113,14 @@ export interface DashboardData {
   live: LiveCall[];
   /** Claude agents running now, plus any that finished within the server's window. */
   agents: AgentActivity | null;
+  /** Index of the first history row currently shown. */
+  callsOffset: number;
+  /** How many rows a page holds. */
+  callsPageSize: number;
+  /** Whether the server has older rows beyond this page. */
+  callsHasMore: boolean;
+  /** Jump to a page. Clamped at zero; triggers an immediate refresh. */
+  setCallsOffset: (offset: number) => void;
   /** True until the first load completes, so panels can show a skeleton not an error. */
   loading: boolean;
   /** Set when the API is unreachable — almost always "the server is not running". */
@@ -81,6 +143,30 @@ export function useDashboardData(): DashboardData {
   const [stats, setStats] = useState<Stats | null>(null);
   const [live, setLive] = useState<LiveCall[]>([]);
   const [agents, setAgents] = useState<AgentActivity | null>(null);
+
+  // Every dataset goes through a change guard, so a poll that returns identical data
+  // causes no state update and therefore no re-render anywhere downstream.
+  const putSystem = useChangeGuard(setSystem);
+  const putUsage = useChangeGuard(setUsage);
+  const putCalls = useChangeGuard(setCalls);
+  const putStats = useChangeGuard(setStats);
+  const putLive = useChangeGuard(setLive);
+  const putAgents = useChangeGuard(setAgents);
+
+  const [callsOffset, setCallsOffsetState] = useState(0);
+  const [callsHasMore, setCallsHasMore] = useState(false);
+
+  /**
+   * The offset the next fetch should use.
+   *
+   * Mirrored into a ref because `refresh` must not depend on it. If the paging offset
+   * were a dependency, `refresh` would be a new function on every page change, and the
+   * Server-Sent Events effect that depends on `refresh` would tear down and reopen its
+   * connection each time someone clicked "older" — reconnecting the live stream to turn a
+   * page.
+   */
+  const callsOffsetRef = useRef(0);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
@@ -91,6 +177,10 @@ export function useDashboardData(): DashboardData {
   // Guards against overlapping agent polls — see refreshAgents. A ref rather than state
   // because changing it must not re-render.
   const agentsInFlight = useRef(false);
+
+  // When something was last actually in flight, so the live poll can coast for a few
+  // seconds afterwards instead of stopping dead on one empty reading.
+  const lastLiveSeen = useRef(0);
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -112,16 +202,19 @@ export function useDashboardData(): DashboardData {
     const [systemResult, usageResult, callsResult, statsResult] = await Promise.allSettled([
       client.system(),
       client.usage(),
-      client.calls(100),
+      client.calls(CALLS_PAGE_SIZE, callsOffsetRef.current),
       client.stats(),
     ]);
 
     if (!mounted.current) return;
 
-    if (systemResult.status === "fulfilled") setSystem(systemResult.value);
-    if (usageResult.status === "fulfilled") setUsage(usageResult.value);
-    if (callsResult.status === "fulfilled") setCalls(callsResult.value.calls);
-    if (statsResult.status === "fulfilled") setStats(statsResult.value);
+    if (systemResult.status === "fulfilled") putSystem(systemResult.value);
+    if (usageResult.status === "fulfilled") putUsage(usageResult.value);
+    if (callsResult.status === "fulfilled") {
+      putCalls(callsResult.value.calls);
+      setCallsHasMore(callsResult.value.has_more);
+    }
+    if (statsResult.status === "fulfilled") putStats(statsResult.value);
 
     // Only report an error when *everything* failed, which means the API itself is down.
     // One failing endpoint is a degraded panel, not a broken dashboard, and showing a
@@ -135,17 +228,18 @@ export function useDashboardData(): DashboardData {
         : null,
     );
     setLoading(false);
-  }, [client]);
+  }, [client, putSystem, putUsage, putCalls, putStats]);
 
   const refreshLive = useCallback(async () => {
     try {
       const response = await client.live();
-      if (mounted.current) setLive(response.live);
+      if (response.live.length > 0) lastLiveSeen.current = Date.now();
+      if (mounted.current) putLive(response.live);
     } catch {
       // Live progress is the most disposable data here — it is replaced within a second.
       // Surfacing a transient failure would flicker an error over a working dashboard.
     }
-  }, [client]);
+  }, [client, putLive]);
 
   const refreshAgents = useCallback(async () => {
     // Skip if the previous request has not come back yet. Each `/agents` call makes the
@@ -156,7 +250,7 @@ export function useDashboardData(): DashboardData {
     agentsInFlight.current = true;
     try {
       const response = await client.agents();
-      if (mounted.current) setAgents(response);
+      if (mounted.current) putAgents(response);
     } catch {
       // Swallowed for the same reason as live progress: this is replaced within two
       // seconds, so a transient failure must not flash an error over a working page.
@@ -167,7 +261,19 @@ export function useDashboardData(): DashboardData {
       // panel updating for the rest of the page's life.
       agentsInFlight.current = false;
     }
-  }, [client]);
+  }, [client, putAgents]);
+
+  const setCallsOffset = useCallback(
+    (offset: number) => {
+      const next = Math.max(0, offset);
+      callsOffsetRef.current = next;
+      setCallsOffsetState(next);
+      // Fetch immediately rather than waiting for the next event, so turning a page feels
+      // like a click rather than like a delay.
+      void refresh();
+    },
+    [refresh],
+  );
 
   // First load.
   useEffect(() => {
@@ -207,11 +313,10 @@ export function useDashboardData(): DashboardData {
     return () => source.close();
   }, [client, refresh, refreshLive]);
 
-  // Poll live progress only while something is actually generating.
+  // Poll live progress while something is generating, and for a short while after.
   useEffect(() => {
-    if (live.length === 0) {
-      // Nothing in flight: no timer at all, so an idle dashboard is genuinely idle and
-      // does not sit making a request every second for no reason.
+    if (live.length === 0 && Date.now() - lastLiveSeen.current > LIVE_IDLE_GRACE_MS) {
+      // Genuinely idle: no timer at all, so an idle dashboard makes no requests.
       return;
     }
     const timer = setInterval(() => void refreshLive(), LIVE_POLL_MS);
@@ -235,6 +340,10 @@ export function useDashboardData(): DashboardData {
     stats,
     live,
     agents,
+    callsOffset,
+    callsPageSize: CALLS_PAGE_SIZE,
+    callsHasMore,
+    setCallsOffset,
     loading,
     error,
     connected,

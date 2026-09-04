@@ -1,5 +1,7 @@
 "use client";
 
+import { memo } from "react";
+
 import type { AgentToast } from "@/lib/useAgentNotifications";
 
 /**
@@ -14,7 +16,7 @@ import type { AgentToast } from "@/lib/useAgentNotifications";
  * Fixed to the corner rather than pushed into the page flow, so a toast appearing cannot
  * shift the panel someone is reading.
  */
-export function Toasts({
+function ToastsInner({
   toasts,
   onDismiss,
 }: {
@@ -49,3 +51,9 @@ export function Toasts({
     </div>
   );
 }
+
+/**
+ * Memoized so a change in another panel's data cannot re-render this one. Without this,
+ * every 900 ms live-progress tick repainted the entire dashboard.
+ */
+export const Toasts = memo(ToastsInner);

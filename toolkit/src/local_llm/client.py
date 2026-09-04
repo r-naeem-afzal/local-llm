@@ -187,11 +187,16 @@ class ProgressReporter:
     _TAIL_CHARS = 400
 
     def __init__(self, live_store: LiveProgressStore, call_id: str, tool: str,
-                 model: str) -> None:
+                 model: str, subject: str = "") -> None:
         self._live = live_store
         self._call_id = call_id
         self._tool = tool
         self._model = model
+        # What this particular call is working on — the URL for an extraction, the question
+        # for a ranking. Carried because the pipeline runs two extractions at once, and two
+        # rows reading "extract_claims / qwen3-14b" are indistinguishable on screen: they
+        # look like the same call rendered twice rather than two different pages being read.
+        self._subject = subject
         # Starts at 0 so the very first frame always passes the throttle: time.monotonic
         # returns a large number, so that first comparison is guaranteed true. Without
         # it, a call shorter than one interval would never report progress at all.
@@ -221,6 +226,7 @@ class ProgressReporter:
             "chars": len(accumulator.content),
             "reasoning_chars": len(accumulator.reasoning),
             "elapsed_ms": elapsed_ms,
+            "subject": self._subject,
             "tail": text[-self._TAIL_CHARS:],
         })
 
@@ -278,7 +284,10 @@ class LocalLLMClient(CompletionClient):
             return int((time.monotonic() - started) * 1000)
 
         accumulator = StreamAccumulator()
-        reporter = ProgressReporter(self._live, call_id, tool, model)
+        # The subject comes from the call's metadata, which is where each caller already
+        # records what it is working on — so no caller has to pass it twice.
+        subject = str((meta or {}).get("url") or (meta or {}).get("question") or "")
+        reporter = ProgressReporter(self._live, call_id, tool, model, subject)
         body = self._build_body(messages, model, token_budget, schema)
 
         try:

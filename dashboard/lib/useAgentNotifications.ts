@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ActiveAgent, AgentActivity } from "./types";
 
@@ -274,12 +274,18 @@ export function useAgentNotifications(activity: AgentActivity | null): AgentNoti
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
 
-  return {
-    toasts,
-    dismiss,
-    desktopEnabled: desktopOn,
-    desktopSupported,
-    enableDesktop,
-    disableDesktop,
-  };
+  // Memoized so the returned object keeps its identity between renders. The page passes
+  // this straight into a memoized panel, and a fresh object every render would make that
+  // panel's props look changed on every tick — defeating the memo it depends on.
+  return useMemo(
+    () => ({
+      toasts,
+      dismiss,
+      desktopEnabled: desktopOn,
+      desktopSupported,
+      enableDesktop,
+      disableDesktop,
+    }),
+    [toasts, dismiss, desktopOn, desktopSupported, enableDesktop, disableDesktop],
+  );
 }

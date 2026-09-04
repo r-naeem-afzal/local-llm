@@ -1,5 +1,7 @@
 "use client";
 
+import { useMemo } from "react";
+
 import { AgentsPanel } from "@/components/AgentsPanel";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { LivePanel } from "@/components/LivePanel";
@@ -41,6 +43,10 @@ export default function DashboardPage() {
     stats,
     live,
     agents,
+    callsOffset,
+    callsPageSize,
+    callsHasMore,
+    setCallsOffset,
     loading,
     error,
     connected,
@@ -52,6 +58,15 @@ export default function DashboardPage() {
   // is off screen, and so one place owns the browser-permission state. A panel that owned
   // it would stop notifying the moment it unmounted.
   const notifications = useAgentNotifications(agents);
+
+  // Held stable across renders. Passing `<NotificationsToggle …/>` inline would build a
+  // new element object every render, and since AgentsPanel is memoized on its props, a
+  // changing element would defeat the memo entirely — the panel would re-render on every
+  // live-progress tick, which is exactly what the memo exists to stop.
+  const notificationsAction = useMemo(
+    () => <NotificationsToggle notifications={notifications} />,
+    [notifications],
+  );
 
   return (
     <main className="shell">
@@ -80,35 +95,45 @@ export default function DashboardPage() {
       {loading && !error ? (
         <p className="empty">Loading…</p>
       ) : (
-        <>
-          <div className="grid-wide">
-            <AgentsPanel
-              activity={agents}
-              notificationsAction={<NotificationsToggle notifications={notifications} />}
-            />
+        <div className="layout">
+          {/* The main column: everything whose height is stable. */}
+          <div>
+            <div className="grid-wide">
+              <AgentsPanel activity={agents} notificationsAction={notificationsAction} />
+            </div>
+
+            <div className="grid">
+              <GpuPanel snapshot={system} />
+              <HostPanel snapshot={system} />
+              <ModelsPanel snapshot={system} />
+            </div>
+
+            <div className="grid">
+              <UsagePanel usage={usage} />
+              <StatsPanel stats={stats} />
+            </div>
+
+            <div className="grid-wide">
+              <HistoryPanel
+                calls={calls}
+                client={client}
+                offset={callsOffset}
+                pageSize={callsPageSize}
+                hasMore={callsHasMore}
+                onOffsetChange={setCallsOffset}
+              />
+            </div>
           </div>
 
-          {/* Live gets the full width: its streaming text is the widest content here, and
-              wrapping it into a narrow column would make the tail unreadable. */}
-          <div className="grid-wide">
+          {/* Live gets its own pinned column. It is the only panel whose height changes
+              second by second — a call starts, a second joins it, the tail grows, both
+              finish — and in the main flow every one of those changes shoved the panels
+              below it up and down the page. Nothing shares its vertical axis here, so it
+              can resize freely without moving anything. */}
+          <div className="live-column">
             <LivePanel live={live} />
           </div>
-
-          <div className="grid">
-            <GpuPanel snapshot={system} />
-            <HostPanel snapshot={system} />
-            <ModelsPanel snapshot={system} />
-          </div>
-
-          <div className="grid">
-            <UsagePanel usage={usage} />
-            <StatsPanel stats={stats} />
-          </div>
-
-          <div className="grid-wide">
-            <HistoryPanel calls={calls} client={client} />
-          </div>
-        </>
+        </div>
       )}
 
       {/* Outside the loading branch on purpose: a toast must still be able to appear while

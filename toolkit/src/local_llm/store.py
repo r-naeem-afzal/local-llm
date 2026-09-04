@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -487,12 +488,40 @@ class FileLiveProgressStore(LiveProgressStore):
         return self._live_dir / f"{call_id}.json"
 
     def write(self, entry: dict[str, Any]) -> None:
+        """Replace this call's progress file atomically.
+
+        Written to a temporary file and then renamed over the real one, rather than
+        written in place. The reason is a visible bug this caused, not tidiness.
+
+        `write_text` opens the file with mode "w", which **truncates it immediately** and
+        only then writes the new bytes. During that gap the file exists but is empty or
+        half-written. Progress is rewritten roughly every 0.7 s and the dashboard polls
+        every 0.9 s, so the two collide often. `read_all` then fails to parse the file and
+        skips the call — and `/live` merges in running database rows that have no progress
+        file, so the very same call immediately reappears labelled `starting`. The row
+        flickers between "running, 4,102 chars" and "loading model into VRAM…" several
+        times a minute, which reads as a machine thrashing rather than one working.
+
+        `os.replace` is atomic on both Windows and POSIX: a reader sees either the whole
+        old file or the whole new one, never a partial. The temporary file carries the
+        call id so two concurrent calls cannot overwrite each other's staging file.
+
+            .local-llm-data/live/26432-3.json.tmp   ->  .local-llm-data/live/26432-3.json
+        """
+        path = self._path(entry["id"])
+        temporary = path.with_suffix(".json.tmp")
         try:
-            self._path(entry["id"]).write_text(json.dumps(entry), encoding="utf-8")
+            temporary.write_text(json.dumps(entry), encoding="utf-8")
+            os.replace(temporary, path)
         except OSError:
             # Progress reporting is strictly best-effort; losing a frame must never
             # interrupt the generation it is describing.
-            pass
+            try:
+                temporary.unlink()
+            except OSError:
+                # Nothing to clean up, or it cannot be removed. Either way the next frame
+                # overwrites it, so this must not raise on the generation's path.
+                pass
 
     def clear(self, call_id: str) -> None:
         try:
@@ -501,19 +530,52 @@ class FileLiveProgressStore(LiveProgressStore):
             # Already gone, which is the desired end state anyway.
             pass
 
+    # How many times to re-attempt one progress file before giving up on it, and how long
+    # to wait between attempts. Both tiny, because the thing being waited out is a rename
+    # that takes microseconds.
+    _READ_ATTEMPTS = 3
+    _READ_BACKOFF_S = 0.002
+
     def read_all(self) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
         try:
-            for path in self._live_dir.glob("*.json"):
-                try:
-                    entries.append(json.loads(path.read_text(encoding="utf-8")))
-                except (OSError, json.JSONDecodeError):
-                    # A file caught mid-write is not valid JSON yet. Skipping it is
-                    # correct: the next poll, a second later, reads it complete.
-                    continue
+            paths = list(self._live_dir.glob("*.json"))
         except OSError:
             return []
+
+        for path in paths:
+            entry = self._read_one(path)
+            if entry is not None:
+                entries.append(entry)
         return entries
+
+    def _read_one(self, path: Path) -> dict[str, Any] | None:
+        """Read one progress file, retrying briefly through a concurrent replacement.
+
+        The retry is Windows-specific in origin and worth spelling out. `os.replace`
+        cannot swap a file that another handle has open, so a reader and a writer meeting
+        on the same file produce a `PermissionError` on whichever arrives second — the
+        reader sees "access denied" for a file that exists and is perfectly valid, and a
+        `FileNotFoundError` is possible in the same window.
+
+        Giving up on that first failure is what made the dashboard blink: the call
+        vanished from `/live` for that poll, and because `/live` merges in running database
+        rows that have no progress file, the same call immediately reappeared labelled
+        `starting`. So the row did not merely disappear, it oscillated between "running,
+        4,102 chars" and "loading model into VRAM…".
+
+        Three attempts two milliseconds apart is more than enough for a rename, and costs
+        nothing in the normal case where the first attempt succeeds.
+        """
+        for attempt in range(self._READ_ATTEMPTS):
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                if attempt + 1 < self._READ_ATTEMPTS:
+                    time.sleep(self._READ_BACKOFF_S)
+        # Genuinely unreadable — the call most likely finished and its file was removed
+        # between the glob and the read. Dropping it is right; it is no longer live.
+        return None
 
 
 class RetentionService:

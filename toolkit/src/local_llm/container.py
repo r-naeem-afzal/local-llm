@@ -38,6 +38,7 @@ from .monitor import (
     SystemMonitor,
     TranscriptLocator,
 )
+from .search import SearchService, UrlCanonicaliser
 from .store import (
     ConnectionProvider,
     FileLiveProgressStore,
@@ -124,6 +125,20 @@ class Toolkit:
     @cached_property
     def claim_extractor(self) -> ClaimExtractor:
         return ClaimExtractor(self.client, self.page_fetcher, self.prompts)
+
+    @cached_property
+    def url_canonicaliser(self) -> UrlCanonicaliser:
+        """Shared so the pipeline and the search service agree on what "the same page"
+        means. Two instances would not disagree today, but a rule added to one and not the
+        other would deduplicate differently in two places — and the symptom would be a
+        report citing one source twice."""
+        return UrlCanonicaliser()
+
+    @cached_property
+    def search(self) -> SearchService:
+        """Web search, with the repository injected so every query is recorded."""
+        return SearchService(self._settings, repository=self.repository,
+                             canonicaliser=self.url_canonicaliser)
 
     @cached_property
     def result_ranker(self) -> ResultRanker:

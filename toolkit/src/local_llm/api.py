@@ -258,6 +258,11 @@ class HistoryRoutes:
                     "chars": 0,
                     "reasoning_chars": 0,
                     "elapsed_ms": None,
+                    # Same field the streaming frames carry, so a row keeps its subject as
+                    # it moves from "starting" to "running" instead of the label appearing
+                    # from nowhere once the first token arrives.
+                    "subject": str((record.meta or {}).get("url")
+                                   or (record.meta or {}).get("question") or ""),
                     "tail": "",
                 }
                 for record in self._repository.list_calls(limit=20, status="running")

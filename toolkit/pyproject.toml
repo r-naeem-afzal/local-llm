@@ -26,6 +26,9 @@ extraction = ["trafilatura>=1.12"]
 api = ["fastapi>=0.111", "uvicorn>=0.30"]
 # Host monitoring: GPU via NVML, RAM and per-process stats via psutil.
 monitor = ["psutil>=5.9", "nvidia-ml-py>=12.555"]
+# Web search for the research pipeline. Optional because DuckDuckGo also works through
+# a dependency-free HTML fallback; this just makes that path more robust.
+search = ["ddgs>=9"]
 # Expose the tools to an MCP client such as Claude Code.
 mcp = ["mcp>=1.2"]
 # MySQL / MariaDB backend. PyMySQL is a pure-Python driver, so it needs no compiler
@@ -33,7 +36,7 @@ mcp = ["mcp>=1.2"]
 # C-based alternatives require a build toolchain.
 mysql = ["PyMySQL>=1.1"]
 all = [
-    "local-llm-toolkit[extraction,api,monitor,mcp,mysql]",
+    "local-llm-toolkit[extraction,api,monitor,mcp,mysql,search]",
 ]
 
 # No [project.scripts] yet. An earlier version declared `local-llm = "local_llm.cli:main"`

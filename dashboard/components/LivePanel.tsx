@@ -1,5 +1,7 @@
 "use client";
 
+import { memo } from "react";
+
 import { formatDuration } from "@/lib/format";
 import type { LiveCall } from "@/lib/types";
 import { Panel, StatusBadge } from "./ui";
@@ -22,7 +24,7 @@ import { Panel, StatusBadge } from "./ui";
  *   stalled when it is working normally.
  * - **running** — producing the answer.
  */
-export function LivePanel({ live }: { live: LiveCall[] }) {
+function LivePanelInner({ live }: { live: LiveCall[] }) {
   return (
     <Panel
       title="Live"
@@ -40,11 +42,16 @@ export function LivePanel({ live }: { live: LiveCall[] }) {
         )
       }
     >
-      {live.length === 0 ? (
-        <p className="empty">No model calls in flight.</p>
-      ) : (
-        live.map((call) => <LiveCallRow key={call.id} call={call} />)
-      )}
+      {/* A fixed-minimum body, so starting or finishing a call does not resize the panel
+          and shove the rest of the page up and down. The content here changes every
+          second; its footprint should not. */}
+      <div className="live-body">
+        {live.length === 0 ? (
+          <p className="empty">No model calls in flight.</p>
+        ) : (
+          live.map((call) => <LiveCallRow key={call.id} call={call} />)
+        )}
+      </div>
     </Panel>
   );
 }
@@ -54,7 +61,7 @@ function LiveCallRow({ call }: { call: LiveCall }) {
   const starting = call.status === "starting";
 
   return (
-    <div style={{ marginBottom: 14 }}>
+    <div className="live-call">
       <div className="metric-row">
         <span>
           <StatusBadge status={call.status} />{" "}
@@ -63,6 +70,11 @@ function LiveCallRow({ call }: { call: LiveCall }) {
         </span>
         <span className="metric-value">{formatDuration(call.elapsed_ms)}</span>
       </div>
+
+      {/* What this call is actually working on. The research pipeline runs two
+          extractions at once, and without this both rows read "extract_claims /
+          qwen3-14b" and look like one call rendered twice. */}
+      {call.subject && <div className="live-subject">{shorten(call.subject)}</div>}
 
       <div className="metric-row">
         <span className="metric-label">
@@ -90,3 +102,30 @@ function LiveCallRow({ call }: { call: LiveCall }) {
     </div>
   );
 }
+
+/**
+ * Shorten a subject for a narrow column.
+ *
+ *   "https://www.payoneer.com/resources/business/guide-to-payment-gateways-in-pakistan/"
+ *     ->  "payoneer.com/…/guide-to-payment-gateways-in-pakistan"
+ *
+ * The host and the last path segment are what identify a page to a reader; the middle is
+ * where the length lives. A question is passed through unchanged apart from a length cap,
+ * since it has no structure to exploit.
+ */
+function shorten(subject: string): string {
+  const match = /^https?:\/\/(?:www\.)?([^/]+)(\/.*)?$/.exec(subject);
+  if (!match) return subject.length > 70 ? `${subject.slice(0, 69)}…` : subject;
+
+  const [, host, path = ""] = match;
+  const segments = path.split("/").filter(Boolean);
+  if (segments.length === 0) return host;
+  const last = segments[segments.length - 1];
+  return segments.length > 1 ? `${host}/…/${last}` : `${host}/${last}`;
+}
+
+/**
+ * Memoized so a change in another panel's data cannot re-render this one. Without this,
+ * every 900 ms live-progress tick repainted the entire dashboard.
+ */
+export const LivePanel = memo(LivePanelInner);

@@ -349,19 +349,121 @@ tr:last-child td {
  */
 .tail {
   font-family: var(--mono);
-  font-size: 12px;
   color: var(--text-dim);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   margin-top: 8px;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 130px;
+  /* Fixed rather than max-height. Streaming text grows a few characters at a time, so a
+     box that sized itself to its content would resize on every frame — roughly once a
+     second — and shove every panel below it down the page. A constant height means the
+     text scrolls inside a box that never moves.
+
+     Sized for the side column: tall enough to read several lines of the model's actual
+     output, short enough that two concurrent calls both fit without scrolling. */
+  height: 150px;
+  font-size: 12.5px;
+  line-height: 1.55;
   overflow-y: auto;
   display: flex;
   flex-direction: column-reverse;
+}
+
+/* ── the two-column shell: scrolling content, pinned live column ── */
+
+/*
+ * Live sits in its own column rather than in the page flow, and this is a correctness
+ * fix disguised as a layout choice.
+ *
+ * Previously Live was a full-width panel at the top. Its height changes constantly — a
+ * call appears, a second concurrent call appears, the streaming tail grows, both finish
+ * and it collapses to one line — and every one of those changes moved the GPU, usage,
+ * totals and history panels up or down the page. Reading anything below Live while the
+ * model was working was genuinely difficult.
+ *
+ * In a column of its own, nothing else shares its vertical axis, so its height can change
+ * as much as it likes without a single pixel of the main column moving.
+ */
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  gap: 16px;
+  align-items: start;
+}
+
+/* `position: sticky` rather than `fixed`: the column stays in the document, so it still
+   sits inside the shell's max-width and gutters instead of having to reproduce them, and
+   it releases naturally on a narrow screen where the grid collapses to one column.
+   Pinned 20px from the top, matching the shell's padding. */
+.live-column {
+  position: sticky;
+  top: 20px;
+  /* Bounded by the viewport and scrolled internally, so a run with several calls in
+     flight scrolls within the column instead of growing the page. */
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  /* Room for the scrollbar without the content shifting when it appears. */
+  scrollbar-gutter: stable;
+}
+
+/* Below this the side column has no room to be useful, so it returns to the flow above
+   the main content — where a single column means its height changes cannot displace
+   anything that is beside it, because nothing is. */
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .live-column {
+    position: static;
+    max-height: none;
+    order: -1;
+  }
+}
+
+/* Holds the live panel's height steady across the empty/busy transition. Smaller than it
+   would need to be in the main flow, because in its own column the reserved space costs
+   nothing that anything else wanted. */
+.live-body {
+  min-height: 120px;
+}
+
+/* The empty state gets centred in that reserved space instead of clinging to the top,
+   which otherwise reads as a broken panel rather than an idle one. */
+.live-body .empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 110px;
+  margin: 0;
+}
+
+/* One in-flight call, boxed. Two concurrent extractions used to render as two visually
+   identical blocks — same tool, same model — which read as the same call drawn twice
+   rather than as two different pages being read. A border and a subject line separate
+   them. */
+.live-call {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: var(--panel-alt);
+}
+
+.live-call:last-child {
+  margin-bottom: 0;
+}
+
+/* What this particular call is working on — the URL being read, or the question being
+   ranked. The one field that tells two concurrent rows apart. */
+.live-subject {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
 }
 
 /* ── payload drawer ── */

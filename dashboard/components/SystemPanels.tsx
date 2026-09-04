@@ -1,5 +1,7 @@
 "use client";
 
+import { memo } from "react";
+
 import { formatMib, formatSeconds } from "@/lib/format";
 import type { SystemSnapshot } from "@/lib/types";
 import { BigMetric, Metric, Panel, StatusBadge, UsageBar } from "./ui";
@@ -13,7 +15,7 @@ import { BigMetric, Metric, Panel, StatusBadge, UsageBar } from "./ui";
  * disagreeing with each other.
  */
 
-export function GpuPanel({ snapshot }: { snapshot: SystemSnapshot | null }) {
+function GpuPanelInner({ snapshot }: { snapshot: SystemSnapshot | null }) {
   const gpu = snapshot?.gpu;
 
   if (!gpu?.available) {
@@ -82,7 +84,7 @@ export function GpuPanel({ snapshot }: { snapshot: SystemSnapshot | null }) {
   );
 }
 
-export function HostPanel({ snapshot }: { snapshot: SystemSnapshot | null }) {
+function HostPanelInner({ snapshot }: { snapshot: SystemSnapshot | null }) {
   const host = snapshot?.host;
 
   if (!host?.available) {
@@ -133,7 +135,7 @@ export function HostPanel({ snapshot }: { snapshot: SystemSnapshot | null }) {
   );
 }
 
-export function ModelsPanel({ snapshot }: { snapshot: SystemSnapshot | null }) {
+function ModelsPanelInner({ snapshot }: { snapshot: SystemSnapshot | null }) {
   const loaded = snapshot?.loaded_models ?? [];
   const installed = snapshot?.installed_models ?? [];
 
@@ -216,3 +218,21 @@ export function ModelsPanel({ snapshot }: { snapshot: SystemSnapshot | null }) {
     </Panel>
   );
 }
+
+/**
+ * Memoized so a change in another panel's data cannot re-render this one. Without this,
+ * every 900 ms live-progress tick repainted the entire dashboard.
+ */
+export const GpuPanel = memo(GpuPanelInner);
+
+/**
+ * Memoized so a change in another panel's data cannot re-render this one. Without this,
+ * every 900 ms live-progress tick repainted the entire dashboard.
+ */
+export const HostPanel = memo(HostPanelInner);
+
+/**
+ * Memoized so a change in another panel's data cannot re-render this one. Without this,
+ * every 900 ms live-progress tick repainted the entire dashboard.
+ */
+export const ModelsPanel = memo(ModelsPanelInner);

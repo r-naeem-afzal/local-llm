@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, memo } from "react";
 
 import type { ApiClient } from "@/lib/ApiClient";
 import { formatDuration, formatTime, formatTokens } from "@/lib/format";
@@ -16,17 +16,53 @@ import { Panel, StatusBadge } from "./ui";
  * Sending payloads with the list would mean about 5.5 MB for one screen of history, nearly
  * all of it never read.
  */
-export function HistoryPanel({
+function HistoryPanelInner({
   calls,
   client,
+  offset,
+  pageSize,
+  hasMore,
+  onOffsetChange,
 }: {
   calls: CallRecord[];
   client: ApiClient;
+  offset: number;
+  pageSize: number;
+  hasMore: boolean;
+  onOffsetChange: (offset: number) => void;
 }) {
   const [selected, setSelected] = useState<CallRecord | null>(null);
 
+  // 1-based and inclusive, because "showing 26–50" is what a reader expects to see, not
+  // the zero-based offset the API works in.
+  const first = calls.length === 0 ? 0 : offset + 1;
+  const last = offset + calls.length;
+
   return (
-    <Panel title="Call history" action={<span className="faint">{calls.length} recent</span>}>
+    <Panel
+      title="Call history"
+      action={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span className="faint">
+            {first}–{last}
+          </span>
+          <button
+            onClick={() => onOffsetChange(offset - pageSize)}
+            disabled={offset === 0}
+            title="Newer calls"
+          >
+            ← newer
+          </button>
+          <button
+            onClick={() => onOffsetChange(offset + pageSize)}
+            disabled={!hasMore}
+            title="Older calls"
+          >
+            older →
+          </button>
+        </span>
+      }
+    >
       {calls.length === 0 ? (
         <p className="empty">No calls recorded yet.</p>
       ) : (
@@ -264,3 +300,9 @@ function PayloadDrawer({
     </div>
   );
 }
+
+/**
+ * Memoized so a change in another panel's data cannot re-render this one. Without this,
+ * every 900 ms live-progress tick repainted the entire dashboard.
+ */
+export const HistoryPanel = memo(HistoryPanelInner);

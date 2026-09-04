@@ -46,7 +46,34 @@ class Extraction(BaseModel):
     claims: list[Claim] = Field(default_factory=list, max_length=5)
 
 
+class RankedIndex(BaseModel):
+    """How the *model* answers a ranking request: by index, never by echoing the result.
+
+    This shape exists because of a measured failure. The earlier schema asked the model to
+    return each result's url, title and snippet alongside its rating — roughly 80 output
+    tokens per result. Ranking 29 results therefore needed over 2,300 tokens, exceeded the
+    2,048-token budget, and produced truncated JSON that failed validation. The research
+    pipeline fell back to raw search order and spent two minutes reading content farms.
+
+    An index plus a rating is about 10 tokens, so the same 29 results cost around 300
+    rather than 2,300. It also removes a second failure mode: a model cannot mangle a URL
+    it never has to reproduce, so every rating still matches a real result.
+    """
+
+    index: int = Field(description="The [n] number of the result being rated.")
+    relevance: Literal["high", "medium", "low"]
+    reason: str = Field(default="", description="A few words on why. Not a sentence.")
+
+
+class IndexRanking(BaseModel):
+    """The model's raw answer — ratings against indices."""
+
+    results: list[RankedIndex]
+
+
 class RankedResult(BaseModel):
+    """One rated result, rejoined locally with the data the caller passed in."""
+
     url: str
     title: str
     snippet: str = ""
@@ -54,6 +81,13 @@ class RankedResult(BaseModel):
 
 
 class Ranking(BaseModel):
+    """What callers receive: whole results, rated.
+
+    Unchanged in shape despite the switch to indices internally, so neither the pipeline
+    nor the MCP tool had to learn about that change — which is the point of doing the
+    rejoin here rather than pushing indices outward.
+    """
+
     results: list[RankedResult]
 
 
@@ -340,8 +374,8 @@ class PromptLibrary:
         )
         return (
             f"Research question: {question}\n\n{self.WEB_NOTE}## Results\n{listing}\n\n"
-            "Return every result with a relevance rating and a one-line snippet saying "
-            "why it is or is not relevant."
+            "Rate every result by its [n] index. Return the index, a relevance rating, and "
+            "a few words of reason. Do not repeat the url or the title — only the index."
         )
 
 
@@ -420,12 +454,45 @@ class ResultRanker:
         self._prompts = prompts or PromptLibrary()
 
     async def rank(self, question: str, results: list[dict]) -> Ranking:
-        return await self._client.complete(
+        """Rate each result, asking the model for indices and rejoining them here.
+
+            results[3] = {"url": "https://paddle.com/…", "title": "Paddle"}
+            model returns {"index": 3, "relevance": "high", "reason": "official docs"}
+              ->  RankedResult(url="https://paddle.com/…", title="Paddle",
+                               relevance="high", snippet="official docs")
+
+        The rejoin happens locally so the model produces only the thing it is actually
+        deciding. That keeps the output short enough not to hit the token cap — the
+        failure that made an earlier version of this method return truncated JSON on any
+        pool larger than about twenty results — and guarantees a URL comes back exactly as
+        it went in.
+        """
+        rated = await self._client.complete(
             [
                 {"role": "system", "content": self._prompts.RANK_SYSTEM},
                 {"role": "user", "content": self._prompts.rank_user(question, results)},
             ],
-            schema=Ranking,
+            schema=IndexRanking,
             tool="rank_results",
             meta={"question": question, "result_count": len(results)},
         )
+
+        rejoined: list[RankedResult] = []
+        for row in rated.results:
+            # An index outside the list means the model invented one. Skipped rather than
+            # raised: one bad row must not discard a ranking that is otherwise usable, and
+            # the pipeline's fallback is far worse than a ranking missing one entry.
+            if not 0 <= row.index < len(results):
+                continue
+            original = results[row.index]
+            rejoined.append(
+                RankedResult(
+                    url=str(original.get("url", "")),
+                    title=str(original.get("title", "")),
+                    # The model's reason is more useful than the search engine's blurb —
+                    # it says why this result was rated as it was — so it wins when present.
+                    snippet=row.reason or str(original.get("snippet", "")),
+                    relevance=row.relevance,
+                )
+            )
+        return Ranking(results=rejoined)

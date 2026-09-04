@@ -1,5 +1,7 @@
 "use client";
 
+import { memo } from "react";
+
 import { formatBytes, formatDuration, formatTokens } from "@/lib/format";
 import type { Stats } from "@/lib/types";
 import { BigMetric, Metric, Panel } from "./ui";
@@ -11,7 +13,7 @@ import { BigMetric, Metric, Panel } from "./ui";
  * these figures stay correct long after the prompts behind them have gone. That is the
  * whole reason the store splits the two tables.
  */
-export function StatsPanel({ stats }: { stats: Stats | null }) {
+function StatsPanelInner({ stats }: { stats: Stats | null }) {
   if (!stats) {
     return (
       <Panel title="Local totals">
@@ -85,3 +87,9 @@ export function StatsPanel({ stats }: { stats: Stats | null }) {
     </Panel>
   );
 }
+
+/**
+ * Memoized so a change in another panel's data cannot re-render this one. Without this,
+ * every 900 ms live-progress tick repainted the entire dashboard.
+ */
+export const StatsPanel = memo(StatsPanelInner);

@@ -1,5 +1,7 @@
 "use client";
 
+import { memo } from "react";
+
 import { formatDuration, formatTokens } from "@/lib/format";
 import type { ActiveAgent, AgentActivity } from "@/lib/types";
 
@@ -25,7 +27,7 @@ import { BigMetric, Panel, StatusBadge } from "./ui";
  * identically would be worse than no column. The `~` marks the row and a footnote
  * explains it once, which keeps the table scannable while leaving the caveat unmissable.
  */
-export function AgentsPanel({
+function AgentsPanelInner({
   activity,
   notificationsAction,
 }: {
@@ -141,3 +143,9 @@ function AgentRow({ agent }: { agent: ActiveAgent }) {
     </tr>
   );
 }
+
+/**
+ * Memoized so a change in another panel's data cannot re-render this one. Without this,
+ * every 900 ms live-progress tick repainted the entire dashboard.
+ */
+export const AgentsPanel = memo(AgentsPanelInner);
