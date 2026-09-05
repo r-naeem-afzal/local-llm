@@ -542,10 +542,25 @@ tr:last-child td {
 .drawer {
   background: var(--panel);
   border-left: 1px solid var(--border);
-  width: min(760px, 100%);
+  width: min(880px, 100%);
   height: 100%;
-  overflow-y: auto;
   padding: 18px 20px;
+  /* A column with a fixed head and one growing body. The drawer itself no longer
+     scrolls: if it did, the header would scroll away and the call being inspected would
+     lose its label halfway down a long prompt. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.drawer-body {
+  /* flex: 1 takes every pixel the head does not use, so the payload fills the screen
+     before anything scrolls. min-height: 0 is the non-obvious half — a flex item's
+     default minimum size is its content, which would let this grow past the drawer and
+     push the scrollbar onto the page instead of keeping it here. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .drawer-head {
@@ -565,8 +580,9 @@ tr:last-child td {
   padding: 10px 12px;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 340px;
-  overflow-y: auto;
+  /* Deliberately uncapped. A per-block max-height gave every block its own scrollbar,
+     which meant a 200-line prompt was read through a 340px window while the rest of the
+     drawer stayed blank. The single scrollbar on .drawer-body replaces all of them. */
   margin: 0 0 14px;
 }
 

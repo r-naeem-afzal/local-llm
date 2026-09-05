@@ -164,6 +164,11 @@ class ModelRouter:
         # place for a reasoning model: the ranking failure that sent the pipeline back to
         # unranked search order was reasoning exhausting the output budget.
         "rank_results": (ModelRole.TRIAGE, ModelRole.STRUCTURED, ModelRole.REASONING),
+        # Judging whether a pool of results answers the question, and naming the
+        # specifics to search for instead, is a judgement about supplied text rather than
+        # a schema fill. Deliberation earns its cost here for the same reason it does in
+        # planning, and the output is small — a flag and three short queries.
+        "refine_queries": (ModelRole.REASONING, ModelRole.STRUCTURED),
         # Extraction fills a fixed schema from a supplied document. Deliberation adds
         # latency to the pipeline's dominant cost and changes nothing about the answer.
         "extract_claims": (ModelRole.STRUCTURED, ModelRole.REASONING),

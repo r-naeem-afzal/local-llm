@@ -250,6 +250,13 @@ function PayloadDrawer({
           <button onClick={onClose}>Close</button>
         </div>
 
+        {/* One scroll region for the whole payload, rather than a scrollbar inside every
+            block. The blocks used to be capped at 340px each and scrolled internally, so a
+            long prompt sat in a short box with half the drawer below it left empty — the
+            reader had to scroll a small window while a screenful of space went unused.
+            Now each block is as tall as its content and this container scrolls once the
+            content is taller than the screen: fill the space first, scroll second. */}
+        <div className="drawer-body">
         {call.error && (
           <>
             <p className="section-label">Error</p>
@@ -303,6 +310,7 @@ function PayloadDrawer({
             )}
           </>
         )}
+        </div>
       </div>
     </div>
   );
