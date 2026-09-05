@@ -114,8 +114,6 @@ export default function DashboardPage() {
                   roughly the same height, which is what stops one of them ending
                   early and leaving a hole. */}
               <div className="col col-rail">
-                <AgentsPanel activity={agents} notificationsAction={notificationsAction} />
-                <LivePanel live={live} />
                 <GpuPanel
                   snapshot={system}
                   telemetry={telemetry}
@@ -126,6 +124,19 @@ export default function DashboardPage() {
                   telemetry={telemetry}
                   history={telemetryHistory}
                 />
+
+                {/* Agents and Live come last in the rail because they are the only two
+                    panels whose height changes: an agent starting adds rows, and a model
+                    call adds a status block and a text tail.
+
+                    Placed above the gauges, as they were, every one of those changes
+                    pushed the GPU and Host cards down and back up - measured at 236px of
+                    page movement as a call went from idle to thinking to answering. From
+                    the bottom of the rail they grow into empty space and nothing moves.
+
+                    The general rule this follows: variable-height content goes below
+                    fixed-height content, never above it. */}
+                <AgentsPanel activity={agents} notificationsAction={notificationsAction} />
               </div>
 
               {/* Flowed rather than placed. Three panels of unequal height cannot fill
@@ -139,6 +150,17 @@ export default function DashboardPage() {
                   <UsagePanel usage={usage} />
                 </div>
                 <StatsPanel stats={stats} />
+
+                {/* Live calls sit here, in the main column, rather than in the rail.
+                    Two reasons. It is the panel worth the most space when something is
+                    happening - a status line, a subject, and streaming text are wider
+                    than a 300px rail can show without wrapping every line - and this is
+                    where the page had a large empty region below the totals.
+
+                    Being last in its column also means it can grow without moving
+                    anything: an extraction going from starting to thinking to answering
+                    used to shift the cards below it by a measured 236px. */}
+                <LivePanel live={live} />
               </div>
             </div>
 

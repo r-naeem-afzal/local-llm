@@ -28,6 +28,28 @@ not for concision or cleverness.
 This standard applies **retroactively**: when you touch an existing module, bring its
 comments up to it as part of the change.
 
+## Git: never commit or push on your own
+
+**Do not create a commit. Do not push.** Only when explicitly asked, in that message.
+
+This is absolute and has no "obviously fine" exception. Finishing a task, a green build,
+passing tests, a natural checkpoint, or having just initialised the repo at my request are
+none of them permission. If committing feels like the tidy next step, that is exactly the
+moment to stop.
+
+Pushing is stricter still. A local commit can be reshaped or discarded; a push sends code
+to a remote where it may be indexed or mirrored, and cannot be quietly undone.
+
+Instead: leave the work in the working tree, say what changed and that it is uncommitted,
+and let me decide how it enters history. Offer a commit in one line if it seems warranted,
+then wait.
+
+Also avoid on your own: `git add` (staging is a state change I did not ask for), tag,
+branch, merge, rebase, `reset`, `checkout` over local changes, `stash`, `clean`.
+
+Read-only is always fine and usually what you want: `git status`, `git log`, `git diff`,
+`git branch -vv`.
+
 ## Architecture: classic OO, following SOLID
 
 Write classes with clear responsibilities and injected dependencies — not a flat set of

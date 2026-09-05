@@ -479,15 +479,27 @@ tr:last-child td {
    would need to be in the main flow, because in its own column the reserved space costs
    nothing that anything else wanted. */
 .live-body {
-  /* No reserved height.
-     This used to hold 120px open so that a call starting or finishing would not resize
-     the panel and shove the page. The intent was right, the trade was not: nothing is in
-     flight most of the time, so the page permanently carried a mostly-empty 145px card -
-     and because it sat beside the much shorter agents card, it also left a matching hole
-     under that one.
-     Letting it collapse when idle and grow when busy costs an occasional reflow, which is
-     itself useful feedback that something started. */
-  min-height: 0;
+  /* Bounded, not reserved.
+     Two wrong answers were tried here first. Holding 120px open permanently meant the
+     page carried a mostly-empty card whenever nothing was running. Letting it grow
+     freely meant that when a call started - and especially while it was thinking, which
+     can run for tens of seconds - the card ballooned and pushed every card below it down
+     by around 250px, then snapped back when it finished. This panel sits at the top of
+     the rail, so that was the entire page jumping.
+     A ceiling gives both: it collapses to nothing when idle, and it cannot grow past a
+     small, predictable amount however many calls are in flight or however much they say.
+     Anything beyond that scrolls inside the card instead of moving the page. */
+  /* A generous default. This panel now sits in the main column, in space that was
+     otherwise empty, so there is nothing to be saved by keeping it small - and it is
+     the thing you are actually watching when a run is going. It stays this tall when
+     idle so that a call starting fills it rather than resizing the page.
+     The ceiling bounds several concurrent calls; beyond it the list scrolls inside. */
+  min-height: 210px;
+  max-height: 460px;
+  overflow-y: auto;
+  /* Hold the scrollbar's width open so its appearance does not shift the content
+     sideways the moment a second call starts. */
+  scrollbar-gutter: stable;
 }
 
 /* One in-flight call, boxed. Two concurrent extractions used to render as two visually
@@ -855,4 +867,51 @@ button:focus-visible,
   .dense-pair {
     grid-template-columns: 1fr;
   }
+}
+
+
+/* The idle line, centred in the now-taller live card. Left at the top of a 210px body
+   it read as a panel that had failed to load rather than one with nothing to show. */
+.live-body:has(> .empty) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Two calls run at once by default (settings.concurrency), so give them a row each
+   rather than stacking narrow blocks down a long card. */
+.live-body:not(:has(> .empty)) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: var(--gap-panel);
+  align-content: start;
+}
+
+
+/* Streaming structured output, shown as progress rather than as raw JSON. The braces and
+   field names carried no information a reader wanted; the count and the newest claim do. */
+.tail-claims {
+  margin-top: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.tail-claims-count {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--running);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.tail-claims-latest {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.45;
+  /* Bounded so a long claim cannot lengthen the card and, through it, the page. */
+  max-height: 74px;
+  overflow: hidden;
 }

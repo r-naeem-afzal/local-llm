@@ -56,6 +56,44 @@ function LivePanelInner({ live }: { live: LiveCall[] }) {
   );
 }
 
+/**
+ * Turn streaming structured output into something a person can read.
+ *
+ * Extraction calls are schema-constrained, so what streams back is raw JSON:
+ *
+ *   {"claim": "Dedicated GPUs use on-board RAM…", "quote": "…", "importance": "central"},
+ *
+ * Shown verbatim, the live panel filled with braces, escaped quotes and field names -
+ * three cards of it side by side - which is noise wearing the costume of detail. What is
+ * actually worth seeing is how many claims have landed and what the newest one says.
+ *
+ * Falls back to the raw tail for plain-text calls, which stream prose and are already
+ * readable.
+ *
+ *   '…"claim": "A", …"claim": "B"'  ->  { count: 2, latest: "B" }
+ *   'Lightweight, embedded…'        ->  { count: 0, latest: null }
+ */
+function readableTail(tail: string): { count: number; latest: string | null } {
+  // The tail is a *window* onto the stream, so the first match is usually cut off
+  // mid-string. Only fully-closed values are taken, which is why the count can lag the
+  // true total by one - an honest undercount beats showing a truncated fragment.
+  // Matches a complete "claim": "…" pair. The inner alternation accepts any character
+  // that is not a quote or a backslash, or any backslash-escaped character — which is
+  // what allows a claim containing an escaped quote to still match as one whole value
+  // rather than being cut short at the quote inside it.
+  const matches = [...tail.matchAll(/"claim"\s*:\s*"((?:[^"\\]|\\.)*)"/g)];
+  if (matches.length === 0) return { count: 0, latest: null };
+
+  // Undo JSON escaping so the text reads as prose instead of showing \" and \n.
+  // Backslash last: doing it first would turn \\" into \" and then into a bare quote,
+  // corrupting text that legitimately contained a backslash.
+  const latest = matches[matches.length - 1][1]
+    .replace(/\\"/g, '"')
+    .replace(/\\n/g, " ")
+    .replace(/\\\\/g, "\\");
+  return { count: matches.length, latest };
+}
+
 function LiveCallRow({ call }: { call: LiveCall }) {
   const thinking = call.status === "thinking";
   const starting = call.status === "starting";
@@ -98,7 +136,37 @@ function LiveCallRow({ call }: { call: LiveCall }) {
         )}
       </div>
 
-      {call.tail && <div className="tail">{call.tail}</div>}
+      {/* The streaming text, and ONLY while an answer is actually streaming.
+          During the thinking phase the tail is the model's private monologue, and
+          showing it was a mistake on two counts. It is noise - nobody needs to read a
+          14B model talking itself through a schema - and because thinking can run for
+          tens of seconds, the box appeared, grew, and vanished again, shoving every
+          card below it down by about 250px and back. The panel sits at the top of the
+          rail, so that was the whole page moving.
+          The line above already reports "thinking · N chars", which is the part worth
+          knowing: it is working, and how far along it is. */}
+      {!thinking && !starting && call.tail && <AnswerTail tail={call.tail} />}
+    </div>
+  );
+}
+
+/**
+ * The streaming answer, rendered as prose or as claim progress depending on its shape.
+ */
+function AnswerTail({ tail }: { tail: string }) {
+  const { count, latest } = readableTail(tail);
+
+  if (count === 0) {
+    // Plain-text generation: the stream is already readable, so show it as it arrives.
+    return <div className="tail">{tail}</div>;
+  }
+
+  return (
+    <div className="tail-claims">
+      <div className="tail-claims-count">
+        {count} claim{count === 1 ? "" : "s"} so far
+      </div>
+      {latest && <div className="tail-claims-latest">{latest}</div>}
     </div>
   );
 }
