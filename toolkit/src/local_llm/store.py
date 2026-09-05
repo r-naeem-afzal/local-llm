@@ -536,6 +536,23 @@ class FileLiveProgressStore(LiveProgressStore):
     _READ_ATTEMPTS = 3
     _READ_BACKOFF_S = 0.002
 
+    # How long a progress file may go untouched before it is treated as abandoned.
+    #
+    # A live call rewrites its file roughly every 0.7 s for as long as it runs — during
+    # the thinking phase as well as while answering — so a file older than this belongs
+    # to a process that is no longer running.
+    #
+    # This matters because the only thing that deletes a progress file is the call
+    # finishing normally. Kill the process mid-call — Ctrl-C, a crash, a `Stop-Process`
+    # — and the file survives forever, so the dashboard reports a call permanently in
+    # flight, frozen at whatever elapsed time it had reached. Observed exactly that: one
+    # orphan claiming "running" at 12.8 s while the GPU sat at 2% and the model had gone
+    # idle, which is precisely the false impression this panel exists to prevent.
+    #
+    # 30 s rather than something tighter so that an unusually long gap between frames —
+    # a stalled network read, a machine briefly swapping — is not mistaken for death.
+    _STALE_AFTER_S = 30.0
+
     def read_all(self) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
         try:
@@ -543,7 +560,19 @@ class FileLiveProgressStore(LiveProgressStore):
         except OSError:
             return []
 
+        now = time.time()
         for path in paths:
+            try:
+                if now - path.stat().st_mtime > self._STALE_AFTER_S:
+                    # Delete rather than merely skip, so the directory does not accumulate
+                    # one dead file per killed process for the life of the installation.
+                    # Best-effort: if the unlink fails the entry is still skipped, which is
+                    # the part that matters.
+                    self.clear(path.stem)
+                    continue
+            except OSError:
+                continue
+
             entry = self._read_one(path)
             if entry is not None:
                 entries.append(entry)

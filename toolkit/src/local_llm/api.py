@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Query
@@ -168,6 +169,10 @@ class HistoryRoutes:
     # fingerprint query — one indexed row plus a directory listing — negligible.
     _POLL_INTERVAL_S = 1.0
 
+    # How long a call may sit in `running` with no output before it stops being shown as
+    # in flight. Past this it is almost certainly a row stranded by a killed process.
+    _STARTING_MAX_AGE_S = 120
+
     def __init__(self, repository: CallRepository, live_store: LiveProgressStore) -> None:
         self._repository = repository
         self._live = live_store
@@ -258,10 +263,22 @@ class HistoryRoutes:
     def _starting_calls(self, already_streaming: set[str | None]) -> list[dict[str, Any]]:
         """Running rows that have not produced a token yet — usually a model load.
 
-        Only the newest few are considered. Concurrency is capped at 2, so a long list
-        here would mean rows stranded as `running` by a crashed process, and replaying all
-        of those as though they were in flight would show activity that is not happening.
+        Only the newest few are considered, and only recent ones. Concurrency is capped at
+        2, so a long list here would mean rows stranded as `running` by a crashed process.
+
+        Age matters as much as count. A row only leaves `running` when the call finishes,
+        and a process killed mid-call never gets to write that — so the row stays
+        `running` in the database for ever. Without a cut-off, one interrupted run would
+        put a permanent phantom "starting" entry in the live panel, which is the same
+        false-activity failure that orphaned progress files caused on the filesystem side.
+
+        The window is generous because this state is genuinely slow: loading a 14B model
+        into VRAM takes about 18 seconds here, and a cold start after an eviction can be
+        longer still. Two minutes is comfortably past that and far short of forever.
         """
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=self._STARTING_MAX_AGE_S)
+        ).isoformat()
         try:
             return [
                 {
@@ -284,7 +301,7 @@ class HistoryRoutes:
                     "tail": "",
                 }
                 for record in self._repository.list_calls(limit=20, status="running")
-                if record.id not in already_streaming
+                if record.id not in already_streaming and record.ts >= cutoff
             ]
         except Exception:
             # The progress files are the primary source. If this database read fails,
