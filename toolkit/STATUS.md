@@ -168,14 +168,33 @@ in-flight call under `.local-llm-data/live/`.
 3. ~~Next.js + React + TypeScript dashboard~~ — **done.** At `../dashboard`. Type-checks
    clean, builds to 111 KB first-load JS, verified against the live API with real model
    activity. See its README for how it updates and why the panels are ordered as they are.
-4. `search.py` — pluggable providers: Brave API, SearXNG, DuckDuckGo. User chose
-   "pluggable, all three".
-5. `pipeline.py` — the credit-free research orchestrator: scope → search → dedup →
-   extract → adversarial verify → synthesize, entirely on local models, writing a
-   cited markdown report. Cap concurrency at 2; one GPU.
-6. ~~`mcp_server.py`~~ — **done and verified.** Four tools: `local_extract_claims`,
+4. ~~`search.py`~~ — **done.** `SearchService` over `BraveSearchProvider`,
+   `SearxngSearchProvider` and `DuckDuckGoProvider` (itself two backends: the `ddgs`
+   package, falling back to HTML scraping). 25/25 live calls succeeded.
+
+   **Only DuckDuckGo is actually configured** — Brave has no key and SearXNG no URL, so
+   `fallbacks: []` on every call. One rate-limit stops a run. Adding a Playwright-backed
+   provider was discussed as the option needing neither a key nor a service.
+5. ~~`pipeline.py`~~ — **done and verified on a real question.** `QueryPlanner`,
+   `ExtractionCache`, `QuoteVerifier`, `ReportWriter`, `ResearchPipeline`.
+
+       6 queries -> 43 distinct pages -> ranked -> 5 read (1 cached)
+       20 claims, 19 quote-verified, 149s, no plan usage
+
+   Two caveats found by running it. Verification is **string matching only** — it catches
+   an invented quote, which is the failure that matters most, but not a real quote used to
+   support a claim it does not support, and there is no contradiction detection at all.
+   And the report answered a *neighbouring* question: asked about merchant-of-record
+   platforms, DuckDuckGo returned freelancer-payment listicles and nothing re-queries when
+   results drift off-topic.
+
+6. `routing.py` — **done.** `ModelRouter` picks a model per task from what is installed,
+   classified by architecture and name rather than a hard-coded list so newly downloaded
+   models are routed to without a restart. Coarse by necessity: only one 14B fits in
+   16 GB, so a swap costs an ~18s load and `prefer_loaded` avoids marginal ones.
+7. ~~`mcp_server.py`~~ — **done and verified.** Four tools: `local_extract_claims`,
    `local_rank_results`, `local_complete`, `local_status`.
-7. ~~A live view of currently-active Claude agents in the dashboard~~ — **done and
+8. ~~A live view of currently-active Claude agents in the dashboard~~ — **done and
    verified live.** `agents.py`, `GET /agents`, and the dashboard's Claude agents panel
    with start/finish/fail notifications. The planned implementation had to be thrown
    away: "a sidechain with a recent message is an active agent" cannot work, because no

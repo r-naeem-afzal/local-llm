@@ -212,10 +212,12 @@ class ModelRouter:
 
         loaded = self._loaded_keys() if prefer_loaded else set()
 
-        # Walk roles best-first. Within a role, a already-resident model wins; otherwise
-        # take the first match, which the registry lists in a stable order.
+        # Walk roles best-first. Within a role, a resident model wins; otherwise take the
+        # best-ranked candidate.
         for role in roles:
-            candidates = [p for p in profiles if role in p.roles]
+            candidates = self._rank_for_role(
+                [p for p in profiles if role in p.roles], role
+            )
             if not candidates:
                 continue
             resident = [p for p in candidates if p.key in loaded]
@@ -228,6 +230,33 @@ class ModelRouter:
                 return candidates[0].key
 
         return self._settings.model
+
+    @staticmethod
+    def _rank_for_role(candidates: list[ModelProfile], role: ModelRole) -> list[ModelProfile]:
+        """Order candidates best-first *for this role*.
+
+        Taking whichever model the registry happened to list first was a real bug: with a
+        4B, a 14B coder and a 14B reasoning model installed, all three carry the
+        `structured` role, and the registry listed the 4B first — so extraction, the task
+        the benchmark says should use the 14B coder, was routed to a 4B instead.
+
+        Two rules, and they pull in opposite directions depending on the role:
+
+        * **Triage wants the smallest.** The whole point of that role is that rating
+          twenty snippets does not need a 14B, and the small model's lower latency is the
+          benefit being sought.
+        * **Every other role wants the largest**, and prefers a model whose *primary* role
+          is the one being asked for — a coder model leads on structured work, so it
+          should outrank a reasoning model that merely lists structured as a fallback.
+
+            structured, [4B qwen3, 14B coder, 14B qwen3]  ->  [14B coder, 14B qwen3, 4B qwen3]
+            triage,     [4B qwen3, 14B coder, 14B qwen3]  ->  [4B qwen3, ...]
+        """
+        if role is ModelRole.TRIAGE:
+            return sorted(candidates, key=lambda p: p.size_mib)
+        # `roles[0] == role` is the primary-role test; False sorts before True, so it is
+        # negated to put primary matches first.
+        return sorted(candidates, key=lambda p: (p.roles[0] is not role, -p.size_mib))
 
     def explain(self) -> dict[str, Any]:
         """What the router would do right now — for the dashboard and for debugging.

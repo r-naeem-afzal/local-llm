@@ -53,6 +53,7 @@ from .database import (
     build_backend,
 )
 from .container import Toolkit
+from .loader import ModelLoader
 from .routing import ModelClassifier, ModelProfile, ModelRole, ModelRouter
 from .extract import (
     ArticleExtractor,
@@ -115,6 +116,7 @@ __all__ = [
     "Toolkit",
     "Settings",
     "ModelRouter",
+    "ModelLoader",
     "ModelRole",
     "ModelProfile",
     "ModelClassifier",

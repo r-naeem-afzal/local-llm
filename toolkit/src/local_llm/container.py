@@ -28,6 +28,7 @@ from .client import LocalLLMClient
 from .config import Settings
 from .database import DatabaseBackend, build_backend
 from .extract import ClaimExtractor, ExtractorChain, PageFetcher, PromptLibrary, ResultRanker
+from .loader import ModelLoader
 from .routing import ModelRouter
 from .monitor import (
     ClaudeUsageReader,
@@ -150,6 +151,15 @@ class Toolkit:
     @cached_property
     def lms(self) -> LmsCommandRunner:
         return LmsCommandRunner(self._settings)
+
+    @cached_property
+    def loader(self) -> ModelLoader:
+        """Loads a model deliberately, rather than letting a request swap one mid-batch.
+
+        Exists because just-in-time swapping between two 14B models on this card fails
+        outright about as often as it succeeds — see `loader.py` for the measurement.
+        """
+        return ModelLoader(self.lms, self.model_registry)
 
     @cached_property
     def router(self) -> ModelRouter:

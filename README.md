@@ -17,7 +17,7 @@ check.
 
 | Path | What it is |
 | --- | --- |
-| `toolkit/` | The Python package: model client, storage, extraction, monitoring, the API, and an MCP server |
+| `toolkit/` | The Python package: model client, storage, extraction, search, the research pipeline, model routing, monitoring, the API, and an MCP server |
 | `dashboard/` | Next.js + React + TypeScript UI, a pure client of the API |
 | `Start-Dashboard.cmd` | Starts the model server, the API and the UI together (Windows) |
 | `CLAUDE.md` | The code standards this repo is written to |
@@ -74,8 +74,12 @@ Points at any OpenAI-compatible endpoint: LM Studio (shipped as **Bionic**, whic
 Studio renamed — same `~/.lmstudio` home and `lms` CLI), llama.cpp, vLLM, or Ollama's
 compatibility endpoint.
 
+Use `127.0.0.1`, not `localhost`. On Windows `localhost` resolves to IPv6 `::1` first and
+LM Studio binds only IPv4, so every request waits for that attempt to time out — measured
+at 2,017 ms against 7 ms, on every call.
+
 ```dotenv
-LOCAL_LLM_URL=http://localhost:1234/v1
+LOCAL_LLM_URL=http://127.0.0.1:1234/v1
 LOCAL_LLM_MODEL=qwen/qwen3-14b
 ```
 
@@ -140,14 +144,60 @@ nowhere, so its figure is estimated from prompt and result size — which unders
 roughly thirteen times. Estimated rows are marked with `~` and never summed with measured
 ones.
 
+## Research pipeline
+
+`python scripts/research.py "your question"` runs the whole loop locally and writes a
+cited markdown report. Measured on a real run:
+
+    queries 6 -> 43 distinct pages -> ranked -> 5 read (1 cached)
+    20 claims, 19 with a quote verified against the page, 149s, no plan usage
+
+    scope -> search -> dedupe -> rank -> extract -> verify -> report
+
+Four things keep the runtime bounded, in the order they matter: ranking before fetching
+(one call triages 43 results; extracting them would be 43 calls of ~15s), deduplicating by
+canonical URL, caching extractions across runs, and verifying quotes by string matching
+rather than by asking a model.
+
+It deliberately does **not** judge. The report presents claims, their sources, and whether
+each quote checked out. Deciding what is true is the half that stays with Claude — moving
+it here would produce a confident local summary nobody should trust.
+
+## Model routing
+
+With several models installed, each task goes to the one that suits it rather than to a
+single configured default:
+
+| Task | Role wanted | Why |
+| --- | --- | --- |
+| `plan_queries` | reasoning | deliberation helps choose search angles; output is small |
+| `rank_results` | triage | high-volume and schema-bound; a 14B is overkill |
+| `extract_claims` | structured | fills a fixed schema, so reasoning is pure overhead |
+
+Models are classified by architecture and name fragments, not a hard-coded list, so a
+model downloaded a minute ago is routed to without restarting anything.
+
+The constraint behind it: one 14B occupies ~8.4 GiB of weights plus ~7 GiB of KV cache at
+32K context — 97% of a 16 GB card — so **only one fits**, and switching costs an ~18s
+load. Routing is therefore coarse and `prefer_loaded` keeps the resident model when the
+difference is marginal.
+
 ## What is not built yet
 
-`search.py` (pluggable Brave / SearXNG / DuckDuckGo) and `pipeline.py` (the credit-free
-research orchestrator).
+Semantic deduplication of claims. `nomic-embed-text-v1.5` is installed but unused, so
+dedup is by URL only — the same fact from five sites counts as five claims, and the report
+reads as consensus when it is one fact echoed.
 
-Also unbuilt, and unbuildable rather than merely pending: any accounting of foreground
-subagent spend. The usage panel's `subagent_messages` figure is derived from `isSidechain`
-and is therefore structurally always zero — it means "not visible", never "not incurred".
+Recency and source quality are extracted and displayed but never weighted, so a 2019 forum
+post ranks level with a 2026 primary source. There is no contradiction detection, and no
+second pass to re-query when an angle comes back thin.
+
+Search has no fallback configured: Brave needs a key and SearXNG a URL, so every query goes
+to DuckDuckGo with nothing behind it.
+
+Also unbuildable rather than merely pending: any accounting of foreground subagent spend.
+The usage panel's `subagent_messages` figure is derived from `isSidechain` and is therefore
+structurally always zero — it means "not visible", never "not incurred".
 
 `toolkit/STATUS.md` is the current handoff, and records what has been measured rather than
 assumed.
