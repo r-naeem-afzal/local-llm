@@ -429,6 +429,22 @@ class ResearchPipeline:
         self._writer = writer or ReportWriter()
         self._canonical = canonicaliser or UrlCanonicaliser()
 
+    async def aclose(self) -> None:
+        """Release resources the search providers hold open.
+
+        Specifically the browser provider's Chromium, which is a child process: a run that
+        ends without this leaves it resident, and a few runs leave a pile of them. Called
+        by the CLI in a `finally`, so an interrupted or failed run cleans up too — the
+        cases where a leak is most likely are exactly the ones that skip a happy-path
+        cleanup.
+        """
+        closer = getattr(self._search, "aclose", None)
+        if closer is not None:
+            try:
+                await closer()
+            except Exception:
+                pass
+
     async def run(self, question: str, max_pages: int = 8,
                   per_query: int = 8,
                   on_progress: Callable[[str], None] | None = None) -> ResearchReport:

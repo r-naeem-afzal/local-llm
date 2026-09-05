@@ -471,13 +471,40 @@ class SearchService:
         # Quality order. Brave is a real index; SearXNG aggregates several; DuckDuckGo
         # scraped is the floor. A run should get the best available rather than the
         # first one someone happened to configure.
-        self._providers = providers or [
+        self._providers = providers or self._default_providers(settings)
+        self._repository = repository
+        self._canonical = canonicaliser or UrlCanonicaliser()
+
+    @staticmethod
+    def _default_providers(settings: Settings) -> list[SearchProvider]:
+        """The providers to try, in quality order.
+
+        Brave is a real index; SearXNG aggregates several; DuckDuckGo over HTTP is the
+        floor. The browser provider goes **last** for cost rather than quality — launching
+        Chromium is about a second before any query runs, against milliseconds for an HTTP
+        request, so it should be reached only when the cheaper options are unavailable or
+        have failed.
+
+        That position is also what makes it useful: it fails for *different* reasons than
+        the others. A rate limit that stops the HTTP client does not stop a browser, and a
+        results page that needs JavaScript is invisible to a scraper and ordinary to
+        Chromium. A fallback that shares its predecessor's failure mode is not a fallback.
+
+        Imported here rather than at module scope so the browser provider is optional: a
+        machine without Playwright installed still gets a working search service.
+        """
+        providers: list[SearchProvider] = [
             BraveSearchProvider(settings),
             SearxngSearchProvider(settings),
             DuckDuckGoProvider(),
         ]
-        self._repository = repository
-        self._canonical = canonicaliser or UrlCanonicaliser()
+        try:
+            from .search_browser import BrowserSearchProvider
+
+            providers.append(BrowserSearchProvider())
+        except ImportError:
+            pass
+        return providers
 
     def chosen(self) -> list[SearchProvider]:
         """The providers to try, in order, given the configuration.
@@ -513,6 +540,23 @@ class SearchService:
         started = time.perf_counter()
         failures: list[str] = []
 
+        # Merge across providers rather than stopping at the first that answers.
+        #
+        # This started as first-one-wins, which is the right shape for a *fallback* — and
+        # the wrong one for the problem actually observed. A run asking which
+        # merchant-of-record platform onboards Pakistani individuals came back with
+        # freelancer-payment listicles: DuckDuckGo had not failed, it had answered badly,
+        # so a fallback triggered only by failure never ran. Querying Bing through a
+        # browser afterwards returned paddle.com and its pricing and onboarding pages
+        # directly — documents the first provider simply did not have.
+        #
+        # Two indexes asked, results unioned and deduplicated by canonical URL, gives the
+        # ranking stage a larger and more varied pool to triage. The cost is one extra
+        # search per query, and the ranking gate downstream means a bigger pool does not
+        # mean more pages fetched — only better choices among them.
+        collected: list[SearchResult] = []
+        succeeded: list[str] = []
+
         for provider in providers:
             try:
                 raw = await provider.search(query, limit)
@@ -520,16 +564,52 @@ class SearchService:
                 failures.append(f"{provider.name}: {type(exc).__name__}: {exc}")
                 continue
 
-            results = self._canonical.deduplicate(raw)[:limit]
-            if not results:
+            if not raw:
                 failures.append(f"{provider.name}: no results")
                 continue
 
-            self._record(query, provider.name, results, failures, started)
-            return results
+            collected.extend(raw)
+            succeeded.append(provider.name)
 
-        self._record(query, "none", [], failures, started, failed=True)
-        raise SearchError("; ".join(failures))
+            # Stop once there is plenty. Asking a third index when two already returned a
+            # full pool spends seconds for results the ranking stage would discard anyway.
+            if len(self._canonical.deduplicate(collected)) >= limit * 2:
+                break
+
+        # Deduplicate across providers, not within one: the same article reached through
+        # two indexes with different tracking suffixes must count once, or the report
+        # would treat one source as two that agree.
+        results = self._canonical.deduplicate(collected)[: limit * 2]
+
+        if not results:
+            self._record(query, "none", [], failures, started, failed=True)
+            raise SearchError("; ".join(failures))
+
+        self._record(query, "+".join(succeeded), results, failures, started)
+        return results
+
+    async def aclose(self) -> None:
+        """Release anything a provider is holding open.
+
+        Only the browser provider needs this, and it needs it badly: Chromium is a child
+        process, so a run that ends without closing it leaves the browser resident. The
+        symptom is a pile of chrome processes after a few research runs, plus Python
+        shutdown warnings about unclosed transports as the interpreter tears down pipes
+        the subprocess still owns.
+
+        Named `aclose` rather than `close` because it is a coroutine, and a caller that
+        forgets the await on something called `close` gets a silent no-op.
+        """
+        for provider in self._providers:
+            closer = getattr(provider, "close", None)
+            if closer is None:
+                continue
+            try:
+                await closer()
+            except Exception:
+                # Best effort. Failing to close one provider must not stop the others
+                # being closed, and must never fail a run whose work is already done.
+                pass
 
     def _record(self, query: str, provider: str, results: list[SearchResult],
                 failures: list[str], started: float, failed: bool = False) -> None:

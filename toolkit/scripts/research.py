@@ -37,6 +37,13 @@ class ResearchCommand:
         # `flush=True` on every line: stdout is block-buffered when redirected to a file,
         # so without it a run piped to a log shows nothing for two minutes and then
         # everything at once, which defeats the point of progress output.
+        try:
+            return await self._run_inner(question, pages, per_query)
+        finally:
+            # In a finally so an interrupted or failed run still releases the browser.
+            await self._pipeline.aclose()
+
+    async def _run_inner(self, question: str, pages: int, per_query: int) -> ResearchReport:
         report = await self._pipeline.run(
             question,
             max_pages=pages,
