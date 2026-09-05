@@ -28,7 +28,7 @@ from .client import LocalLLMClient
 from .config import Settings
 from .database import DatabaseBackend, build_backend
 from .extract import ClaimExtractor, ExtractorChain, PageFetcher, PromptLibrary, ResultRanker
-from .loader import ModelLoader
+from .loader import ModelLoader, VramBudget
 from .routing import ModelRouter
 from .monitor import (
     ClaudeUsageReader,
@@ -159,7 +159,28 @@ class Toolkit:
         Exists because just-in-time swapping between two 14B models on this card fails
         outright about as often as it succeeds — see `loader.py` for the measurement.
         """
-        return ModelLoader(self.lms, self.model_registry)
+        return ModelLoader(self.lms, self.model_registry, self.vram_budget)
+
+    @cached_property
+    def gpu_probe(self) -> GpuProbe:
+        """Shared so the loader's memory checks and the dashboard read the same card.
+
+        Previously the monitor built its own. Two probes would not have been wrong, but
+        one of them is now making load decisions, and a decision made against a different
+        reading of the same card than the one on screen is the kind of discrepancy that
+        takes an hour to notice.
+        """
+        return GpuProbe()
+
+    @cached_property
+    def vram_budget(self) -> VramBudget:
+        """Decides whether a model can be loaded without overfilling the card.
+
+        Its own component rather than something inside the loader, because "what can this
+        card hold" is a question the router and the dashboard may want answered without
+        also gaining the ability to load models.
+        """
+        return VramBudget(self.gpu_probe)
 
     @cached_property
     def router(self) -> ModelRouter:
@@ -211,7 +232,7 @@ class Toolkit:
     @cached_property
     def monitor(self) -> SystemMonitor:
         return SystemMonitor(
-            GpuProbe(),
+            self.gpu_probe,
             HostProbe(),
             self.model_registry,
             self.server_probe,

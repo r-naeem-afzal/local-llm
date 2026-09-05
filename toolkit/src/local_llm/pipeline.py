@@ -48,7 +48,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -88,6 +88,22 @@ class VerifiedClaim:
     quote_verified: bool
     extractor: str
     truncated: bool
+    # Whether the quote actually *supports* the claim, as opposed to merely appearing on
+    # the page. "unknown" means the check did not run — the pipeline was built without a
+    # support checker — and is distinct from "unsupported", which means it ran and said no.
+    support: str = "unknown"
+    support_reason: str = ""
+
+    @property
+    def trustworthy(self) -> bool:
+        """Quote found on the page *and* the quote says what the claim says.
+
+        The property exists because "verified" meant only the first half for most of this
+        project's life, and reports presented that as though it meant both. A real run had
+        21 of 24 claims quote-verified, of which about a third were unsupported by their
+        own quotes and one was directly contradicted by it.
+        """
+        return self.quote_verified and self.support in ("supported", "unknown")
 
 
 @dataclass
@@ -113,7 +129,24 @@ class ResearchReport:
 
     @property
     def verified_claims(self) -> list[VerifiedClaim]:
-        return [claim for claim in self.claims if claim.quote_verified]
+        """Claims whose quote is both real and actually says what the claim says.
+
+        This used to mean only "the quote appears on the page", which turned out to be a
+        much weaker guarantee than the reports implied — see `ClaimSupportChecker`. The
+        headline number in every report comes from here, so widening it silently would
+        have been the wrong kind of quiet.
+        """
+        return [claim for claim in self.claims if claim.trustworthy]
+
+    @property
+    def unsupported_claims(self) -> list[VerifiedClaim]:
+        """Claims whose own quote does not back them, worth showing rather than hiding.
+
+        A contradicted claim is the most interesting output a run can produce: either the
+        extractor inverted its source, or the sources genuinely disagree. Deleting these
+        would throw away the run's best signal and leave a report that looks unanimous.
+        """
+        return [c for c in self.claims if c.support in ("unsupported", "contradicted")]
 
 
 # ─────────────────────────── stages ───────────────────────────
@@ -496,6 +529,125 @@ class QuoteVerifier:
         return re.sub(r"\s+", " ", flattened).strip().lower()
 
 
+class SupportVerdict(BaseModel):
+    """Whether a quote actually backs the claim it was attached to."""
+
+    verdict: Literal["supported", "unsupported", "contradicted"] = Field(
+        default="unsupported",
+        description=(
+            "supported: the quote states the claim. "
+            "unsupported: the quote is about something else, or is too general to "
+            "establish the claim. "
+            "contradicted: the quote states the opposite of the claim."
+        ),
+    )
+    # Kept short deliberately. It exists so a reader can see *why* a claim was dropped
+    # without re-reading the source, not so the model can argue with itself at length —
+    # and a long reason costs generation time on every claim in the report.
+    reason: str = Field(default="", description="At most one short sentence.")
+
+    # Defaulting to "unsupported" rather than "supported" is the safe direction. If the
+    # model returns something unparseable, the claim is demoted rather than promoted, and
+    # a claim wrongly demoted is a smaller error than a wrong claim presented as verified.
+
+
+class ClaimSupportChecker:
+    """Checks that a claim's quote actually says what the claim says it says.
+
+    This closes a gap that made the reports quietly misleading. `QuoteVerifier` confirms
+    that a quote appears verbatim in the page it is attributed to — that is, it checks
+    **provenance**. It says nothing about whether the quote *supports* the claim, and the
+    reports were presenting "quote verified" as though it did.
+
+    A real run made the difference concrete. From a report where 21 of 24 claims were
+    marked quote-verified:
+
+        claim: "Latuos can onboard a Pakistan-based individual seller without a
+                registered company."
+        quote: "Latuos seller onboarding is currently available to businesses and
+                individuals based in the United States, Canada, United Kingdom,
+                Australia, New Zealand, and Singapore."
+
+    The quote is genuine, appears verbatim on the page, and says the **opposite** of the
+    claim. Pakistan is not on the list. Roughly a third of that report's verified claims
+    failed this way — some contradicted like this one, more of them merely unsupported,
+    such as a claim that Paddle covers 220+ countries backed by a quote about a different
+    company entirely.
+
+    Provenance and support are different properties and need different checks. Provenance
+    is string matching and cannot hallucinate, so it stays where it is. Support is a
+    judgement about meaning, which needs a model — but a tightly bounded one: two short
+    strings in, one word out, no document to get lost in. That is the shape of task a
+    local model is most reliable at, and it costs about a second per claim.
+
+    The pipeline does not throw the failures away. A contradicted claim is the single most
+    interesting thing a research run can find, because it means either the extractor
+    inverted the source or the sources disagree — and both are worth a reader's attention
+    far more than another agreeing bullet point.
+    """
+
+    SYSTEM = (
+        "You check whether a quotation supports a claim. You are given only the claim and "
+        "the quotation - judge nothing else, and never use outside knowledge.\n"
+        "supported: the quotation states the claim, or states something that makes the "
+        "claim true.\n"
+        "unsupported: the quotation is about a different subject, or is too general to "
+        "establish the claim. A quotation that merely mentions the same company is not "
+        "support.\n"
+        "contradicted: the quotation states the opposite of the claim, or excludes what "
+        "the claim includes.\n"
+        "Be strict. Most incorrect claims are not opposites - they are quotations that "
+        "sound relevant but do not actually say what the claim says."
+    )
+
+    # Small, because the answer is one word plus a short sentence. A generous budget here
+    # would be spent on the model explaining itself, which is paid for on every claim in
+    # every report.
+    _MAX_TOKENS = 200
+
+    def __init__(self, client: CompletionClient, router: Any | None = None) -> None:
+        self._client = client
+        self._router = router
+
+    def _route(self, task: str) -> str | None:
+        """The model for this task, or None to let the client use its default."""
+        if self._router is None:
+            return None
+        try:
+            return self._router.choose(task)
+        except Exception:
+            return None
+
+    async def check(self, claim: str, quote: str) -> SupportVerdict:
+        """Judge one claim against its quote.
+
+            check("Latuos onboards Pakistani individuals",
+                  "Latuos onboarding is available to ... United States, Canada, ...")
+              ->  SupportVerdict(verdict="contradicted",
+                                 reason="Pakistan is not in the listed countries.")
+
+        A failure returns "unsupported" rather than raising. The alternative — letting one
+        failed check end a run that has already paid for searching, ranking and reading —
+        would trade a whole report for one claim's rating. Demoting is the conservative
+        direction: the claim is still shown, just not as verified.
+        """
+        try:
+            return await self._client.complete(
+                [
+                    {"role": "system", "content": self.SYSTEM},
+                    {"role": "user",
+                     "content": f"Claim: {claim}\n\nQuotation: {quote}"},
+                ],
+                schema=SupportVerdict,
+                tool="check_support",
+                max_tokens=self._MAX_TOKENS,
+                model=self._route("check_support"),
+            )
+        except Exception as exc:
+            return SupportVerdict(verdict="unsupported",
+                                  reason=f"check failed: {type(exc).__name__}")
+
+
 class ReportWriter:
     """Renders a finished run as cited markdown.
 
@@ -520,7 +672,8 @@ class ReportWriter:
             f"- Results ranked worth reading: {report.ranked}",
             f"- Pages read: {report.read} ({report.cached} from cache)",
             f"- Claims extracted: {len(report.claims)} "
-            f"({len(report.verified_claims)} with a quote verified against the page)",
+            f"({len(report.verified_claims)} with a quote that is both on the page and "
+            f"supports the claim)",
             "",
         ]
 
@@ -567,7 +720,18 @@ class ReportWriter:
         # first screen should have read the load-bearing evidence rather than the asides.
         order = {"central": 0, "supporting": 1, "tangential": 2}
         for claim in sorted(report.claims, key=lambda c: (order.get(c.importance, 3), c.url)):
-            mark = "" if claim.quote_verified else " **unverified**"
+            # Two independent failures, marked separately because they mean different
+            # things: a missing quote suggests the extractor paraphrased or invented it,
+            # while a present-but-unsupporting quote means the reasoning is wrong even
+            # though the source text is genuine.
+            marks = []
+            if not claim.quote_verified:
+                marks.append(" **quote not found on the page**")
+            if claim.support == "contradicted":
+                marks.append(" **the quote contradicts this claim**")
+            elif claim.support == "unsupported":
+                marks.append(" **the quote does not support this claim**")
+            mark = "".join(marks)
             lines += [
                 f"### {claim.claim}",
                 "",
@@ -622,6 +786,7 @@ class ResearchPipeline:
         cache: ExtractionCache,
         refiner: QueryRefiner | None = None,
         verifier: QuoteVerifier | None = None,
+        support: ClaimSupportChecker | None = None,
         writer: ReportWriter | None = None,
         canonicaliser: UrlCanonicaliser | None = None,
     ) -> None:
@@ -640,6 +805,10 @@ class ResearchPipeline:
         # it did before this stage existed. Nothing breaks, runs just get one chance
         # to phrase the question well.
         self._refiner = refiner
+        # Optional for the same reason as the refiner: without it the pipeline behaves
+        # exactly as it did before, and every claim's support is recorded as "unknown"
+        # rather than being silently assumed good.
+        self._support = support
         self._verifier = verifier or QuoteVerifier()
         self._writer = writer or ReportWriter()
         self._canonical = canonicaliser or UrlCanonicaliser()
@@ -704,7 +873,48 @@ class ResearchPipeline:
         say(f"reading {len(selected)} pages (concurrency {self._settings.concurrency})…")
         await self._read_all(question, selected, report, say)
 
+        # ── check that each quote supports its claim ──
+        # After reading rather than during it, because this needs nothing but the claim
+        # and its quote — no page, no fetch — so it is cheap, order-independent, and can
+        # be skipped entirely without affecting anything upstream.
+        await self._check_support(report, say)
+
         return self._finish(report, started)
+
+    async def _check_support(self, report: ResearchReport,
+                             say: Callable[[str], None]) -> None:
+        """Rate every claim against its own quote, two at a time.
+
+        Only claims whose quote was found on the page are checked. Checking one that was
+        never found would be asking the model whether an invented quote supports a claim,
+        which answers a question nobody asked — the claim is already untrustworthy on
+        provenance grounds.
+
+        The same semaphore reasoning as reading applies: one card, one resident model, so
+        a third concurrent request queues rather than going faster.
+        """
+        if self._support is None:
+            return
+        checkable = [c for c in report.claims if c.quote_verified]
+        if not checkable:
+            return
+
+        say(f"checking that {len(checkable)} quotes support their claims…")
+        gate = asyncio.Semaphore(self._settings.concurrency)
+
+        async def check(claim: VerifiedClaim) -> None:
+            async with gate:
+                verdict = await self._support.check(claim.claim, claim.quote)
+                claim.support = verdict.verdict
+                claim.support_reason = verdict.reason
+
+        await asyncio.gather(*(check(claim) for claim in checkable))
+
+        failed = [c for c in checkable if c.support != "supported"]
+        if failed:
+            say(f"  {len(failed)} of {len(checkable)} quotes do not support their claim")
+        else:
+            say("  all quotes support their claims")
 
     async def _gather_results(self, report: ResearchReport, per_query: int,
                               say: Callable[[str], None]) -> list[SearchResult]:
@@ -971,6 +1181,7 @@ def build_pipeline(toolkit: Any) -> ResearchPipeline:
         search=toolkit.search,
         planner=QueryPlanner(toolkit.client, toolkit.router),
         refiner=QueryRefiner(toolkit.client, toolkit.router),
+        support=ClaimSupportChecker(toolkit.client, toolkit.router),
         ranker=toolkit.result_ranker,
         extractor=toolkit.claim_extractor,
         fetcher=toolkit.page_fetcher,

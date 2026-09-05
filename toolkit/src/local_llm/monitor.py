@@ -374,6 +374,12 @@ class HostProbe:
 @dataclass
 class LoadedModel:
     key: str
+    # The server's handle for *this instance*, which is not the same as the model key.
+    # Loading a model twice gives the second copy an identifier like
+    # "qwen/qwen2.5-coder-14b:2" while both report the same `key` — so anything that
+    # deduplicates by key cannot see a duplicate load at all. That is exactly how two 14B
+    # models ended up sharing a card that fits one, unnoticed.
+    identifier: str
     display_name: str
     size_mib: int
     context_length: int
@@ -490,6 +496,7 @@ class ModelRegistry:
         quantisation = entry.get("quantization") or {}
         return LoadedModel(
             key=entry.get("modelKey") or entry.get("identifier") or "?",
+            identifier=entry.get("identifier") or entry.get("modelKey") or "?",
             display_name=entry.get("displayName") or "",
             size_mib=int(entry.get("sizeBytes") or 0) // 1024 // 1024,
             context_length=int(entry.get("contextLength") or 0),

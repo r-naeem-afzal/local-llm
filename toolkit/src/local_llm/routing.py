@@ -164,6 +164,10 @@ class ModelRouter:
         # place for a reasoning model: the ranking failure that sent the pipeline back to
         # unranked search order was reasoning exhausting the output budget.
         "rank_results": (ModelRole.TRIAGE, ModelRole.STRUCTURED, ModelRole.REASONING),
+        # Two short strings in, one word out. No deliberation is needed to see that a
+        # quotation listing six countries does not mention a seventh, and reasoning here
+        # would be paid on every claim in the report.
+        "check_support": (ModelRole.STRUCTURED, ModelRole.TRIAGE, ModelRole.REASONING),
         # Judging whether a pool of results answers the question, and naming the
         # specifics to search for instead, is a judgement about supplied text rather than
         # a schema fill. Deliberation earns its cost here for the same reason it does in
