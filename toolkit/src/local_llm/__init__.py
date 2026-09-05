@@ -53,6 +53,7 @@ from .database import (
     build_backend,
 )
 from .container import Toolkit
+from .routing import ModelClassifier, ModelProfile, ModelRole, ModelRouter
 from .extract import (
     ArticleExtractor,
     Claim,
@@ -113,6 +114,10 @@ __all__ = [
     # composition root — the usual entry point
     "Toolkit",
     "Settings",
+    "ModelRouter",
+    "ModelRole",
+    "ModelProfile",
+    "ModelClassifier",
     "DatabaseConfig",
     # model access
     "CompletionClient",

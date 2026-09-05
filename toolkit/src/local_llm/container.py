@@ -28,6 +28,7 @@ from .client import LocalLLMClient
 from .config import Settings
 from .database import DatabaseBackend, build_backend
 from .extract import ClaimExtractor, ExtractorChain, PageFetcher, PromptLibrary, ResultRanker
+from .routing import ModelRouter
 from .monitor import (
     ClaudeUsageReader,
     GpuProbe,
@@ -124,7 +125,7 @@ class Toolkit:
 
     @cached_property
     def claim_extractor(self) -> ClaimExtractor:
-        return ClaimExtractor(self.client, self.page_fetcher, self.prompts)
+        return ClaimExtractor(self.client, self.page_fetcher, self.prompts, self.router)
 
     @cached_property
     def url_canonicaliser(self) -> UrlCanonicaliser:
@@ -142,13 +143,22 @@ class Toolkit:
 
     @cached_property
     def result_ranker(self) -> ResultRanker:
-        return ResultRanker(self.client, self.prompts)
+        return ResultRanker(self.client, self.prompts, self.router)
 
     # ── monitoring ──
 
     @cached_property
     def lms(self) -> LmsCommandRunner:
         return LmsCommandRunner(self._settings)
+
+    @cached_property
+    def router(self) -> ModelRouter:
+        """Chooses which installed model runs a given kind of work.
+
+        Built from the registry rather than a fixed list, so a model downloaded a minute
+        ago is routed to without restarting anything.
+        """
+        return ModelRouter(self._settings, self.model_registry)
 
     @cached_property
     def model_registry(self) -> ModelRegistry:

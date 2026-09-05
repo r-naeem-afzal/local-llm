@@ -391,10 +391,32 @@ class ClaimExtractor:
     """
 
     def __init__(self, client: CompletionClient, fetcher: PageFetcher,
-                 prompts: PromptLibrary | None = None) -> None:
+                 prompts: PromptLibrary | None = None, router: Any | None = None) -> None:
         self._client = client
         self._fetcher = fetcher
         self._prompts = prompts or PromptLibrary()
+        # Optional so this class still works standalone with no routing at all, in which
+        # case the client falls back to the configured default model. Consulted per call
+        # rather than once in the constructor, because which model is resident changes as
+        # the machine is used, and a stale choice would force needless evictions.
+        self._router = router
+
+
+    def _route(self, task: str) -> str | None:
+        """The model this task should use, or None to let the client pick the default.
+
+        None rather than the configured model name so that a missing router changes
+        nothing at all: the client's own fallback stays the single place that knows what
+        the default is.
+        """
+        if self._router is None:
+            return None
+        try:
+            return self._router.choose(task)
+        except Exception:
+            # A routing failure must never fail the work. Falling back to the default
+            # model is always a correct outcome, just possibly a slower one.
+            return None
 
     async def extract(self, url: str, question: str) -> SourceExtraction:
         page = await self._fetcher.fetch(url)
@@ -416,6 +438,7 @@ class ClaimExtractor:
             ],
             schema=Extraction,
             tool="extract_claims",
+            model=self._route("extract_claims"),
             # Recorded against the call so the dashboard can show which URL a slow or
             # failed extraction was working on. Without it a history row is just a
             # duration with no subject.
@@ -449,9 +472,11 @@ class ResultRanker:
     twenty pages, so this is what keeps the pipeline affordable.
     """
 
-    def __init__(self, client: CompletionClient, prompts: PromptLibrary | None = None) -> None:
+    def __init__(self, client: CompletionClient, prompts: PromptLibrary | None = None,
+                 router: Any | None = None) -> None:
         self._client = client
         self._prompts = prompts or PromptLibrary()
+        self._router = router
 
     # How many results to rate in one call.
     #
@@ -477,6 +502,23 @@ class ResultRanker:
     # 30 tokens per rated item — because the surplus is what the reasoning consumes.
     # Running out here is silent, so the headroom is the safeguard.
     _MAX_TOKENS = 3000
+
+
+    def _route(self, task: str) -> str | None:
+        """The model this task should use, or None to let the client pick the default.
+
+        None rather than the configured model name so that a missing router changes
+        nothing at all: the client's own fallback stays the single place that knows what
+        the default is.
+        """
+        if self._router is None:
+            return None
+        try:
+            return self._router.choose(task)
+        except Exception:
+            # A routing failure must never fail the work. Falling back to the default
+            # model is always a correct outcome, just possibly a slower one.
+            return None
 
     async def rank(self, question: str, results: list[dict]) -> Ranking:
         """Rate each result, asking the model for indices and rejoining them here.
@@ -519,6 +561,7 @@ class ResultRanker:
                 ],
                 schema=IndexRanking,
                 tool="rank_results",
+                model=self._route("rank_results"),
                 max_tokens=self._MAX_TOKENS,
                 # `offset` and `total` are recorded so a partial ranking is diagnosable
                 # from the dashboard: a missing batch shows as a gap in the offsets.
