@@ -308,7 +308,40 @@ class ModelLoader:
         if self.unload_duplicates():
             self._settle()
 
+        # "The right model is loaded" is not the same as "the card is in a good state".
+        # Returning early on the first condition alone was a real bug: with gpt-oss-20b
+        # and the coder both resident, asking for the coder returned True and left 199 MiB
+        # free, because the coder *was* there — so the guard reported success on exactly
+        # the overfilled card it exists to prevent. When eviction is wanted, the model must
+        # be resident **and alone**.
+        others = [key for key in self.resident_keys() if key != model_key]
+        if model_key in self.resident_keys() and not (evict_others and others):
+            return True
+
+        # Only now, with a load genuinely about to happen, is "does it fit" worth asking.
+        # Asking earlier was a bug: it refused a model that was *already loaded and
+        # running at full speed*, because the estimate of how much memory an unload would
+        # return is deliberately conservative and came out below what the model needs. An
+        # estimate has no business overruling a model that is demonstrably working.
         weights_mib = self._weights_mib(model_key)
+
+        # A model the registry has never heard of cannot be sized, so it cannot be checked
+        # — and an unsizeable model must not be allowed to cost a working one. Refusing
+        # here, *before* the unload, keeps whatever is currently resident.
+        #
+        # This is not hypothetical. `lms ls` stopped listing openai/gpt-oss-20b partway
+        # through a session, so the size lookup returned 0, the "unknown means do not
+        # block" rule skipped the check, and the loader unloaded a healthy coder model for
+        # a load that then failed — leaving the card with nothing on it. "Unknown" is a
+        # reason to be careful, not a reason to proceed.
+        if not weights_mib and self.resident():
+            self.last_error = (
+                f"{model_key} is not in the model registry, so its memory cost cannot be "
+                f"estimated; keeping the resident model rather than evicting it for an "
+                f"unknown quantity"
+            )
+            return False
+
         if self._budget is not None and weights_mib:
             # Measured against an *empty* card rather than current free memory: everything
             # else is about to be unloaded, so the question is whether this model fits on
@@ -321,16 +354,6 @@ class ModelLoader:
                     f"{free_when_empty} MiB would be free with nothing else loaded"
                 )
                 return False
-
-        # "The right model is loaded" is not the same as "the card is in a good state".
-        # Returning early on the first condition alone was a real bug: with gpt-oss-20b
-        # and the coder both resident, asking for the coder returned True and left 199 MiB
-        # free, because the coder *was* there — so the guard reported success on exactly
-        # the overfilled card it exists to prevent. When eviction is wanted, the model must
-        # be resident **and alone**.
-        others = [key for key in self.resident_keys() if key != model_key]
-        if model_key in self.resident_keys() and not (evict_others and others):
-            return True
 
         if evict_others:
             # Ignore the result: if nothing was loaded this is a no-op, and if it fails
@@ -415,7 +438,14 @@ class ModelLoader:
         free = self._budget.free_mib()
         if free is None:
             return None
-        recovered = free + sum(model.size_mib for model in self.resident())
+        # Each resident model returns its *whole* footprint, not just its weights. Summing
+        # weights alone under-counted badly — with the coder resident and 398 MiB free it
+        # estimated 8,969 MiB would be recovered, when the true figure is about 14,600,
+        # because the KV cache is nearly as large as the weights and comes back too. That
+        # under-count made the guard refuse the one model known to work.
+        recovered = free + sum(
+            self._budget.required_mib(model.size_mib) for model in self.resident()
+        )
 
         # Capped at the physical card. Two models whose weights total more than the card
         # produced an estimate of 20,332 MiB free on a 16,303 MiB card — which is not a
