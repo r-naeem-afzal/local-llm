@@ -212,21 +212,39 @@ class ModelRouter:
 
         loaded = self._loaded_keys() if prefer_loaded else set()
 
-        # Walk roles best-first. Within a role, a resident model wins; otherwise take the
-        # best-ranked candidate.
+        # A resident model that can serve *any* of the roles beats loading a new one for
+        # the best role. This is the correction for a measured regression rather than a
+        # preference.
+        #
+        # Ranking prefers a small model, so with a 14B resident and no small model loaded,
+        # the router asked for the 4B — and the server loaded it *alongside* the 14B
+        # rather than instead of it. Both then sat in VRAM at 32K context each: 16,064 of
+        # 16,303 MiB used, 238 MiB free, and extraction slowed from about 12 seconds to
+        # **115 seconds**. An eightfold regression, caused by routing that was trying to
+        # save time.
+        #
+        # The earlier note that a 4B "might coexist" with a 14B was wrong. At 32K context
+        # the KV cache dominates — a 14B alone already occupies roughly 15.5 GiB of a 16 GB
+        # card — so there is no room for a second model of any size.
+        #
+        # So: use what is loaded if it can do the job at all, even in a weaker role. Only
+        # load something new when nothing resident can serve any role for this task.
+        if prefer_loaded:
+            for role in roles:
+                candidates = self._rank_for_role(
+                    [p for p in profiles if role in p.roles], role
+                )
+                resident = [p for p in candidates if p.key in loaded]
+                if resident:
+                    return resident[0].key
+
+        # Nothing resident can help — or the caller asked to ignore what is loaded. Take
+        # the best candidate for the preferred role and accept the load.
         for role in roles:
             candidates = self._rank_for_role(
                 [p for p in profiles if role in p.roles], role
             )
-            if not candidates:
-                continue
-            resident = [p for p in candidates if p.key in loaded]
-            if resident:
-                return resident[0].key
-            # Nothing resident for this role. Only accept a swap for the *first* choice
-            # role; for later, weaker roles a swap is not worth an eviction, so keep
-            # looking and let the default catch it.
-            if role is roles[0]:
+            if candidates:
                 return candidates[0].key
 
         return self._settings.model
