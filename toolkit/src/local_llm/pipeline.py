@@ -131,8 +131,23 @@ class QueryPlanner:
         "angle. Use search keywords, not sentences. Never repeat a query."
     )
 
-    def __init__(self, client: CompletionClient) -> None:
+    def __init__(self, client: CompletionClient, router: Any | None = None) -> None:
         self._client = client
+        # Without this the planner asked for the configured default model by omission,
+        # and the server loaded it *alongside* whatever was already resident rather than
+        # replacing it. Two 14B models then shared a card that fits one — 16,003 of 16,303
+        # MiB used, 299 MiB free — and extraction slowed from ~12s to 164s. A stage that
+        # does not route is not neutral; it silently pins a second model.
+        self._router = router
+
+    def _route(self, task: str) -> str | None:
+        """The model for this task, or None to let the client use its default."""
+        if self._router is None:
+            return None
+        try:
+            return self._router.choose(task)
+        except Exception:
+            return None
 
     async def plan(self, question: str) -> list[str]:
         """Return the queries to run, always including the question itself.
@@ -155,6 +170,7 @@ class QueryPlanner:
                 ],
                 schema=SearchPlan,
                 tool="plan_queries",
+                model=self._route("plan_queries"),
                 meta={"question": question},
             )
             queries = [q.strip() for q in plan.queries if q.strip()]
@@ -697,7 +713,7 @@ def build_pipeline(toolkit: Any) -> ResearchPipeline:
     return ResearchPipeline(
         settings=toolkit.settings,
         search=toolkit.search,
-        planner=QueryPlanner(toolkit.client),
+        planner=QueryPlanner(toolkit.client, toolkit.router),
         ranker=toolkit.result_ranker,
         extractor=toolkit.claim_extractor,
         fetcher=toolkit.page_fetcher,

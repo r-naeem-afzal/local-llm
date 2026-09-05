@@ -461,6 +461,44 @@ class SqlCallRepository(CallRepository):
             "by_model": by_model,
         }
 
+    def reap_abandoned(self, older_than_s: float = 300.0) -> int:
+        """Mark calls stuck in `running` as failed, and report how many.
+
+        A row leaves `running` only when the call finishes and writes its ending. A
+        process killed mid-call — Ctrl-C, a crash, a `Stop-Process` — never gets there, so
+        the row stays `running` for ever. The live view then merges it in as a call still
+        starting, and the dashboard shows work in flight on an idle machine: exactly the
+        false impression the panel exists to prevent, and the filesystem side of the same
+        bug was fixed by expiring stale progress files.
+
+        Recording them as errors rather than deleting them is the honest outcome. The call
+        genuinely did not complete, and the statistics should say so; deleting would
+        quietly improve the error rate by discarding the failures.
+
+        The window is generous because a legitimately slow call must never be reaped out
+        from under itself. Five minutes is far past the longest observed extraction
+        (~30 s) while still short enough that an abandoned row does not linger for a
+        session.
+        """
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=older_than_s)
+        ).isoformat()
+        try:
+            stale = [
+                record for record in self.list_calls(limit=200, status="running")
+                if record.ts < cutoff
+            ]
+        except Exception:
+            return 0
+
+        for record in stale:
+            self.finish_call(
+                record.id,
+                status="error",
+                error="abandoned: the process running this call exited before it finished",
+            )
+        return len(stale)
+
     def size_bytes(self) -> int:
         try:
             return self._backend.size_bytes(self._connections.connection())

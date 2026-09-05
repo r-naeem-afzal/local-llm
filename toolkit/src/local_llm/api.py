@@ -475,6 +475,18 @@ class DashboardApi:
             allow_headers=["*"],
         )
 
+        # Clean up rows left `running` by a process that was killed mid-call. Done once
+        # at startup rather than on a timer: the rows only appear when something crashed,
+        # and a dashboard opened afterwards should not show phantom work in flight.
+        # Failure here must not stop the API — a stale row is a display annoyance, an API
+        # that will not start is not.
+        try:
+            reaped = self._toolkit.repository.reap_abandoned()
+            if reaped:
+                print(f"reaped {reaped} abandoned call(s) left running by a killed process")
+        except Exception:
+            pass
+
         router = APIRouter()
         for routes in self._routers():
             routes.register(router)
