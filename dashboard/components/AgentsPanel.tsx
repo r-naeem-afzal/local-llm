@@ -55,27 +55,36 @@ function AgentsPanelInner({
 
   const totalTokens = activity.agents.reduce((total, agent) => total + agent.tokens, 0);
 
+  // Anything worth showing counters for: running now, recently finished, or failed.
+  const hasActivity =
+    activity.running > 0 || activity.finished > 0 || activity.errored > 0;
+
   return (
     <Panel title="Claude agents" action={notificationsAction}>
-      <div className="metric-grid">
-        <BigMetric
-          label="running"
-          value={activity.running.toLocaleString()}
-          // Coloured only when something is actually running, so a glance at the page
-          // distinguishes "spending plan usage" from "idle" without reading the number.
-          colour={activity.running > 0 ? "var(--running)" : undefined}
-        />
-        <BigMetric label="just finished" value={activity.finished.toLocaleString()} />
-        <BigMetric
-          label="failed"
-          value={activity.errored.toLocaleString()}
-          colour={activity.errored > 0 ? "var(--error)" : undefined}
-        />
-        <BigMetric
-          label={activity.tokens_estimated ? "tokens (part est.)" : "tokens"}
-          value={formatTokens(totalTokens)}
-        />
-      </div>
+      {/* The counters appear only when there is something to count. All four read
+          zero on an idle machine, which is four large numerals restating what the
+          line below them already says, in about 90px of otherwise empty card. */}
+      {hasActivity && (
+        <div className="metric-grid">
+          <BigMetric
+            label="running"
+            value={activity.running.toLocaleString()}
+            // Coloured only when something is actually running, so a glance at the page
+            // distinguishes "spending plan usage" from "idle" without reading the number.
+            colour={activity.running > 0 ? "var(--running)" : undefined}
+          />
+          <BigMetric label="just finished" value={activity.finished.toLocaleString()} />
+          <BigMetric
+            label="failed"
+            value={activity.errored.toLocaleString()}
+            colour={activity.errored > 0 ? "var(--error)" : undefined}
+          />
+          <BigMetric
+            label={activity.tokens_estimated ? "tokens (part est.)" : "tokens"}
+            value={formatTokens(totalTokens)}
+          />
+        </div>
+      )}
 
       {activity.agents.length === 0 ? (
         <p className="empty">No Claude agents active.</p>

@@ -29,6 +29,9 @@ out/
 next-env.d.ts
 *.tsbuildinfo
 
+# Playwright UI verification output: screenshots of the running dashboard.
+.ui-check/
+
 # ── editors and OS ───────────────────────────────────────────────────────────
 .vscode/
 .idea/

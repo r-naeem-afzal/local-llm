@@ -261,28 +261,35 @@ function ModelsPanelInner({ snapshot }: { snapshot: SystemSnapshot | null }) {
                 <th>Model</th>
                 <th>State</th>
                 <th className="num">Size</th>
-                <th className="num">Context</th>
-                {/* TTL explains an otherwise baffling observation: a model loaded moments
-                    ago is suddenly gone and the next call pays the load again. */}
-                <th className="num">Evicts in</th>
+                {/* Context and eviction merged into one column. As two columns they needed
+                    more width than a third-width card has, so the table overflowed into a
+                    horizontal scrollbar and clipped its own last header mid-word. Both are
+                    short values answering the same question: how this model is configured,
+                    and how long it will stay resident.
+
+                    TTL is worth showing at all because it explains an otherwise baffling
+                    observation - a model loaded moments ago is suddenly gone and the next
+                    call pays the ~18s load again. */}
+                <th className="num">Ctx · evicts</th>
               </tr>
             </thead>
             <tbody>
               {loaded.map((model) => (
                 <tr key={model.key}>
-                  <td className="mono">{model.key}</td>
+                  {/* Model keys are long enough to force the table wider than its card, so
+                      they wrap rather than pushing the layout around. */}
+                  <td className="mono wrap-anywhere">{model.key}</td>
                   <td>
                     <StatusBadge status={model.status === "idle" ? "idle" : "running"} />
                   </td>
                   <td className="num">{formatMib(model.size_mib)}</td>
                   <td className="num">
+                    {/* The loaded context only, not "loaded / maximum". The maximum is
+                        rarely what you need mid-run, and printing both is what pushed this
+                        column past the available width. */}
                     {model.context_length.toLocaleString()}
-                    <span className="faint">
-                      {" "}
-                      / {model.max_context_length.toLocaleString()}
-                    </span>
+                    <span className="faint"> · {formatSeconds(model.ttl_remaining_s)}</span>
                   </td>
-                  <td className="num">{formatSeconds(model.ttl_remaining_s)}</td>
                 </tr>
               ))}
             </tbody>
@@ -295,12 +302,12 @@ function ModelsPanelInner({ snapshot }: { snapshot: SystemSnapshot | null }) {
           <p className="section-label" style={{ marginTop: 14 }}>
             On disk
           </p>
-          <div className="table-scroll">
+          <div className="table-scroll scroll-list">
             <table>
               <tbody>
                 {installed.map((model) => (
                   <tr key={model.key}>
-                    <td className="mono">{model.key}</td>
+                    <td className="mono wrap-anywhere">{model.key}</td>
                     <td className="dim">
                       {model.params || model.type}
                       {model.architecture ? ` · ${model.architecture}` : ""}

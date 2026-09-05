@@ -72,9 +72,18 @@ function StatsPanelInner({ stats }: { stats: Stats | null }) {
       {stats.by_tool.length > 0 && (
         <>
           <p className="section-label" style={{ marginTop: 14 }}>By tool</p>
-          {stats.by_tool.map((row) => (
-            <Metric key={row.tool ?? "unknown"} label={row.tool ?? "unknown"} value={row.n} />
-          ))}
+          {/* A compact multi-column list rather than one full-width row per tool.
+              With a row each, fourteen tools made this card about twice the height of
+              the panel beside it, so that panel rendered with a large empty gap below
+              it purely to match. */}
+          <div className="kv-list scroll-list">
+            {stats.by_tool.map((row) => (
+              <div className="kv-row" key={row.tool ?? "unknown"} title={row.tool ?? "unknown"}>
+                <span>{row.tool ?? "unknown"}</span>
+                <span>{row.n}</span>
+              </div>
+            ))}
+          </div>
         </>
       )}
 

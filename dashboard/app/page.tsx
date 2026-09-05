@@ -100,27 +100,46 @@ export default function DashboardPage() {
         <div className="layout">
           {/* The main column: everything whose height is stable. */}
           <div>
-            <div className="grid-wide">
-              <AgentsPanel activity={agents} notificationsAction={notificationsAction} />
-            </div>
+            {/* Two stacks, not grid rows. Cards in a stack start where the one
+                above them ends, so there is no cross-column alignment to leave
+                gaps. Grouped by the question each answers: the machine on the
+                left, what it has cost on the right. */}
+            <div className="columns">
+              {/* The rail: gauges, read at a glance. Narrow on purpose - they are a
+                  handful of numbers, and the width they used to take belonged to the
+                  panels carrying tables. */}
+              {/* The rail holds everything read at a glance: what is running, and how
+                  the machine is doing. The main column holds everything read as a
+                  table. Grouping them this way also makes the two sides come out
+                  roughly the same height, which is what stops one of them ending
+                  early and leaving a hole. */}
+              <div className="col col-rail">
+                <AgentsPanel activity={agents} notificationsAction={notificationsAction} />
+                <LivePanel live={live} />
+                <GpuPanel
+                  snapshot={system}
+                  telemetry={telemetry}
+                  history={telemetryHistory}
+                />
+                <HostPanel
+                  snapshot={system}
+                  telemetry={telemetry}
+                  history={telemetryHistory}
+                />
+              </div>
 
-            <div className="grid">
-              <GpuPanel
-                snapshot={system}
-                telemetry={telemetry}
-                history={telemetryHistory}
-              />
-              <HostPanel
-                snapshot={system}
-                telemetry={telemetry}
-                history={telemetryHistory}
-              />
-              <ModelsPanel snapshot={system} />
-            </div>
-
-            <div className="grid">
-              <UsagePanel usage={usage} />
-              <StatsPanel stats={stats} />
+              {/* Flowed rather than placed. Three panels of unequal height cannot fill
+                  two explicit columns evenly - one always ends short - so the browser
+                  balances them instead. */}
+              <div className="dense">
+                {/* The two narrow tables share a row; the wide one keeps the full
+                    width it actually uses. */}
+                <div className="dense-pair">
+                  <ModelsPanel snapshot={system} />
+                  <UsagePanel usage={usage} />
+                </div>
+                <StatsPanel stats={stats} />
+              </div>
             </div>
 
             <div className="grid-wide">
@@ -140,9 +159,6 @@ export default function DashboardPage() {
               finish — and in the main flow every one of those changes shoved the panels
               below it up and down the page. Nothing shares its vertical axis here, so it
               can resize freely without moving anything. */}
-          <div className="live-column">
-            <LivePanel live={live} />
-          </div>
         </div>
       )}
 

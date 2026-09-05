@@ -30,6 +30,13 @@
 
   --accent: #58a6ff;
   --radius: 8px;
+
+  /* One spacing scale for the whole page. The gap between sections was previously
+     written per-rule, and one rule simply omitted it - which is how the agents card
+     ended up sitting almost flush against the row of gauges below it while every
+     other pair had breathing room. Defining it once makes that impossible. */
+  --gap-panel: 16px;   /* between panels sitting side by side in a row */
+  --gap-section: 22px; /* between one row of panels and the next */
   --mono: ui-monospace, "Cascadia Code", "Consolas", monospace;
 }
 
@@ -49,9 +56,13 @@ body {
 /* ── layout ── */
 
 .shell {
-  max-width: 1500px;
+  /* Was a flat 1500px, which left roughly a third of a wide monitor as empty
+     background while the tables inside were being truncated and scrolled. The
+     viewport-relative cap uses the space that exists without letting text runs
+     grow uncomfortably long on an ultrawide. */
+  max-width: min(1900px, 97vw);
   margin: 0 auto;
-  padding: 20px;
+  padding: 20px 22px 40px;
 }
 
 .topbar {
@@ -74,14 +85,26 @@ body {
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: var(--gap-panel);
+  margin-bottom: var(--gap-section);
+  /* The single biggest source of wasted space on this page.
+     A grid item defaults to `stretch`, so every panel in a row grew to the height of the
+     tallest one beside it. "Claude usage" therefore rendered with roughly 300px of empty
+     card below its table purely because "Local totals" next to it happened to be longer,
+     and the same happened to the GPU and Host cards next to the taller Models list.
+     `start` lets each card end where its content ends. */
+  align-items: start;
 }
 
 .grid-wide {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 16px;
+  gap: var(--gap-panel);
+  /* This rule had no bottom margin at all, which is why the agents card at the top sat
+     tight against the row of gauges under it while every other section was spaced. The
+     gap came only from the *following* element's margin, and .grid is the only rule that
+     had one. */
+  margin-bottom: var(--gap-section);
 }
 
 .panel {
@@ -143,8 +166,16 @@ body {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-  gap: 14px;
+  /* `max-content` rather than `1fr` as the upper bound. With `1fr` the tiles divided the
+     full card width between them, so the four counters in the agents panel - which are
+     usually single digits - were strung out across roughly 800px with vast gaps between
+     a number and its own label. Sizing to content keeps a group of small numbers reading
+     as one group. */
+  grid-template-columns: repeat(auto-fit, minmax(96px, max-content));
+  gap: 14px 26px;
+  /* Pack them to the left rather than distributing the leftover space, which would
+     re-create the spreading that `max-content` just removed. */
+  justify-content: start;
 }
 
 /* ── bars ── */
@@ -388,10 +419,31 @@ tr:last-child td {
  * as much as it likes without a single pixel of the main column moving.
  */
 .layout {
+  /* Was a two-column grid with a permanent 340-400px side column for live calls.
+     Nothing is in flight most of the time, so that column stood empty down the
+     whole height of the page - the single largest block of wasted space on a wide
+     screen - while the tables beside it were being clipped.
+
+     Live calls now sit in the top row instead, beside the agents panel, where they
+     are prominent when they exist and cost nothing when they do not. */
+  display: block;
+}
+
+/* The top row: what is happening right now. Agents get the wider share because a
+   running agent lists a description and token counts, whereas a live call is a
+   status line and a text tail. */
+.grid-status {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 400px;
-  gap: 16px;
+  grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr);
+  gap: var(--gap-panel);
+  margin-bottom: var(--gap-section);
   align-items: start;
+}
+
+@media (max-width: 900px) {
+  .grid-status {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* `position: sticky` rather than `fixed`: the column stays in the document, so it still
@@ -427,17 +479,15 @@ tr:last-child td {
    would need to be in the main flow, because in its own column the reserved space costs
    nothing that anything else wanted. */
 .live-body {
-  min-height: 120px;
-}
-
-/* The empty state gets centred in that reserved space instead of clinging to the top,
-   which otherwise reads as a broken panel rather than an idle one. */
-.live-body .empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 110px;
-  margin: 0;
+  /* No reserved height.
+     This used to hold 120px open so that a call starting or finishing would not resize
+     the panel and shove the page. The intent was right, the trade was not: nothing is in
+     flight most of the time, so the page permanently carried a mostly-empty 145px card -
+     and because it sat beside the much shorter agents card, it also left a matching hole
+     under that one.
+     Letting it collapse when idle and grow when busy costs an occasional reflow, which is
+     itself useful feedback that something started. */
+  min-height: 0;
 }
 
 /* One in-flight call, boxed. Two concurrent extractions used to render as two visually
@@ -553,7 +603,10 @@ button:focus-visible,
 .empty {
   color: var(--text-faint);
   font-size: 13px;
-  padding: 10px 0;
+  /* Was 10px top and bottom inside cards that then sat half empty. An idle panel should
+     be a quiet line, not a large blank area demanding the same attention as a busy one. */
+  padding: 2px 0;
+  margin: 0;
 }
 
 
@@ -590,4 +643,216 @@ button:focus-visible,
   /* Tabular figures so the live number does not shift the label sideways as its
      digit count changes - the same jitter the metric rows avoid. */
   font-variant-numeric: tabular-nums;
+}
+
+
+/* ── compact label/value list ─────────────────────────────────────────────────
+   For lists of many short entries, such as the per-tool call counts. Rendered as
+   full-width rows, fourteen tools occupied fourteen lines and made the Local
+   totals card roughly twice the height of the Claude usage card beside it - so
+   the grid row was sized by one panel and the other left a large empty gap under
+   itself. Flowing them into columns puts the same information in a third of the
+   height and brings the two cards back into balance.
+
+   auto-fit rather than a fixed column count, so the same list is three columns in
+   a wide card and one column on a narrow screen without a media query. */
+
+.kv-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  column-gap: 22px;
+}
+
+.kv-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 13px;
+  /* A hairline between entries keeps a value visually tied to its own label once
+     the list is in columns, where vertical alignment alone is ambiguous. */
+  border-bottom: 1px solid rgba(48, 54, 61, 0.4);
+}
+
+.kv-row span:first-child {
+  color: var(--text-dim);
+  /* Tool names can be long. Truncating keeps the columns even rather than letting
+     one long name widen its column and unbalance the grid. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kv-row span:last-child {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+
+/* ── bounded lists ────────────────────────────────────────────────────────────
+   Any list that grows with usage gets a ceiling and scrolls inside its own card.
+
+   Without this, one panel's height is dictated by how many distinct tools have
+   ever been called - fourteen and climbing - so it grew to roughly twice the
+   height of the card beside it, and the shorter card sat with a large empty gap
+   under it because a grid row is as tall as its tallest item. Capping means card
+   heights stay comparable no matter how much history accumulates. */
+
+.scroll-list {
+  max-height: 190px;
+  overflow-y: auto;
+  /* Reserve the scrollbar so content does not shift sideways when it appears. */
+  scrollbar-gutter: stable;
+  /* A hint that there is more below, rather than the list simply stopping. */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
+}
+
+/* Long identifiers - model keys, tool names - wrap rather than forcing the table
+   wider than its card. The Models panel previously overflowed into a horizontal
+   scrollbar and clipped its own column header mid-word. */
+.wrap-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+
+/* ── column layout ────────────────────────────────────────────────────────────
+   The main panels sit in two independent stacks rather than in grid rows.
+
+   This is the fix for the empty gaps that kept reappearing. In a grid, every cell
+   in a row occupies the height of the tallest card beside it, so a short card
+   either stretched (leaving blank space inside it) or sat at the top of its row
+   (leaving blank space under it). Either way the page was full of holes, and no
+   amount of adjusting the individual cards removed them, because the alignment
+   was doing it - not the content.
+
+   Stacked columns have no cross-column alignment at all: each card starts where
+   the one above it ended. The only ragged edge left is the bottom of the shorter
+   column, which is the one place it reads as natural rather than as a hole.
+
+   Two columns rather than three, grouped by what they answer: the left stack is
+   the machine, the right stack is what it has cost. That also happens to balance
+   their heights, because the machine panels are individually short and numerous
+   while the accounting panels are few and tall. */
+
+.columns {
+  display: grid;
+  /* Three tracks, weighted by how much each panel actually has to say.
+     GPU and Host are gauges: a handful of numbers and two small charts. They were
+     previously given a full half of the page, while the panels that carry real
+     tables - models, Claude usage, local totals - were squeezed into the other
+     half and had to wrap and truncate. A fixed narrow rail for the gauges and the
+     remaining width split between the dense panels puts the space where the
+     information is. */
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: var(--gap-panel);
+  align-items: start;
+  margin-bottom: var(--gap-section);
+}
+
+/* Below this the three tracks no longer fit, so the rail stops being a rail and
+   the layout falls back to two equal columns, then to one. */
+@media (max-width: 1100px) {
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-panel);
+  /* min-width: 0 so a wide table inside a card cannot force the whole column
+     wider than its share of the grid, which is what made the Models table
+     overflow before. */
+  min-width: 0;
+}
+
+@media (max-width: 1000px) {
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* ── the gauge rail ───────────────────────────────────────────────────────────
+   Cards in the narrow left column. They hold continuously-changing numbers that
+   are read at a glance rather than studied, so they are scaled down to match
+   their importance: the same information, taking a third of the width and a
+   smaller share of the eye. */
+
+.col-rail .big-metric {
+  /* Down from 26px. At the rail's width three metrics at full size wrapped onto
+     separate lines, which made a compact card tall again. */
+  font-size: 20px;
+}
+
+.col-rail .metric-grid {
+  gap: 10px 16px;
+}
+
+.col-rail .metric-row {
+  padding: 2px 0;
+}
+
+.col-rail .metric-label,
+.col-rail .metric-value {
+  font-size: 12px;
+}
+
+/* Stacked rather than side by side: at 300px two charts side by side are about
+   120px each, too narrow to read a trend from. */
+.col-rail .spark-row {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+
+/* ── the dense area ───────────────────────────────────────────────────────────
+   The panels that carry tables, flowed into balanced columns.
+
+   Laid out as explicit grid columns, three panels of unequal length can never fill
+   two tracks evenly: whichever column gets the odd one out ends short, and no
+   arrangement of three items into two stacks avoids it. CSS multi-column solves
+   exactly this - the browser measures the content and splits it so the columns
+   come out the same height, which is the one thing a grid cannot do.
+
+   `break-inside: avoid` keeps a card whole; without it a table would be sliced in
+   half across the column boundary. */
+
+.dense {
+  /* A single stack, not columns.
+     Multi-column was tried here and cannot help: `break-inside: avoid` means whole
+     cards are placed, never split, so three panels of unequal height distribute as
+     two-and-one and the short track is left with a gap no arrangement removes.
+     Stacked full-width there is nothing to align against and therefore no gap, and
+     the tables get the full width they were short of anyway. */
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-panel);
+  min-width: 0;
+}
+
+
+
+
+/* Two narrow tables side by side, above one wide one.
+
+   Stacked full-width, the Models and Claude-usage tables had roughly 1500px for
+   four short columns, so a row read as a model name, then a gulf, then a size.
+   Pairing them halves that. Local totals stays full width because it genuinely
+   uses it - its per-tool list flows into eight columns at that width. */
+.dense-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gap-panel);
+  align-items: start;
+}
+
+@media (max-width: 1200px) {
+  .dense-pair {
+    grid-template-columns: 1fr;
+  }
 }
