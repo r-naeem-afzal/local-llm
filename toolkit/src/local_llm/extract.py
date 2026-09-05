@@ -26,7 +26,7 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, Field
 
-from .client import CompletionClient
+from .client import CompletionClient, LocalLLMError
 from .config import Settings
 
 # ─────────────────────────── schemas ───────────────────────────
@@ -453,6 +453,31 @@ class ResultRanker:
         self._client = client
         self._prompts = prompts or PromptLibrary()
 
+    # How many results to rate in one call.
+    #
+    # Answering by index rather than by echoing each URL was supposed to keep the output
+    # short enough for one call to cover any pool. It was not enough, and a real run
+    # proved it: 31 results produced 4,365 characters of reasoning plus 3,233 of answer,
+    # hit the 2,048-token output cap, and came back as JSON truncated mid-object. The
+    # pipeline caught the parse failure and fell back to *search-engine order* — so the
+    # ranking silently stopped happening, and pages were read in whatever order DuckDuckGo
+    # returned them. That defeats the entire point of ranking before fetching, and it did
+    # it quietly, which is worse.
+    #
+    # The missing factor was reasoning. Qwen3 spends its output budget thinking before it
+    # answers, and that thinking grows with the number of items being weighed, so the cap
+    # is reached sooner than the answer length alone suggests.
+    #
+    # 12 keeps a batch's reasoning and answer comfortably inside the budget measured
+    # above, while still being large enough that the model is choosing between genuine
+    # alternatives rather than rating items in isolation.
+    _BATCH_SIZE = 12
+
+    # Output budget per batch. Deliberately far above what the answer needs — roughly
+    # 30 tokens per rated item — because the surplus is what the reasoning consumes.
+    # Running out here is silent, so the headroom is the safeguard.
+    _MAX_TOKENS = 3000
+
     async def rank(self, question: str, results: list[dict]) -> Ranking:
         """Rate each result, asking the model for indices and rejoining them here.
 
@@ -462,29 +487,58 @@ class ResultRanker:
                                relevance="high", snippet="official docs")
 
         The rejoin happens locally so the model produces only the thing it is actually
-        deciding. That keeps the output short enough not to hit the token cap — the
-        failure that made an earlier version of this method return truncated JSON on any
-        pool larger than about twenty results — and guarantees a URL comes back exactly as
-        it went in.
+        deciding, and guarantees a URL comes back exactly as it went in.
+
+        Large pools are rated in batches — see `_BATCH_SIZE` for the measurement that
+        forced it. Batches are rated concurrently only up to the configured concurrency,
+        which the caller's client already enforces, so this does not oversubscribe the GPU.
         """
-        rated = await self._client.complete(
-            [
-                {"role": "system", "content": self._prompts.RANK_SYSTEM},
-                {"role": "user", "content": self._prompts.rank_user(question, results)},
-            ],
-            schema=IndexRanking,
-            tool="rank_results",
-            meta={"question": question, "result_count": len(results)},
-        )
+        if not results:
+            return Ranking(results=[])
+
+        rejoined: list[RankedResult] = []
+        for start in range(0, len(results), self._BATCH_SIZE):
+            batch = results[start:start + self._BATCH_SIZE]
+            rejoined.extend(await self._rank_batch(question, batch, start, len(results)))
+        return Ranking(results=rejoined)
+
+    async def _rank_batch(self, question: str, batch: list[dict], offset: int,
+                          total: int) -> list[RankedResult]:
+        """Rate one batch. Indices come back batch-local and are shifted by `offset`.
+
+        A failed batch returns nothing rather than raising. Losing twelve ratings out of
+        thirty-one leaves the caller with a usable partial ranking; raising would discard
+        every rating and drop the pipeline back to unranked search order — which is the
+        failure this batching exists to prevent, so it must not be the response to it.
+        """
+        try:
+            rated = await self._client.complete(
+                [
+                    {"role": "system", "content": self._prompts.RANK_SYSTEM},
+                    {"role": "user", "content": self._prompts.rank_user(question, batch)},
+                ],
+                schema=IndexRanking,
+                tool="rank_results",
+                max_tokens=self._MAX_TOKENS,
+                # `offset` and `total` are recorded so a partial ranking is diagnosable
+                # from the dashboard: a missing batch shows as a gap in the offsets.
+                meta={
+                    "question": question,
+                    "result_count": len(batch),
+                    "offset": offset,
+                    "of_total": total,
+                },
+            )
+        except LocalLLMError:
+            return []
 
         rejoined: list[RankedResult] = []
         for row in rated.results:
-            # An index outside the list means the model invented one. Skipped rather than
-            # raised: one bad row must not discard a ranking that is otherwise usable, and
-            # the pipeline's fallback is far worse than a ranking missing one entry.
-            if not 0 <= row.index < len(results):
+            # An index outside the batch means the model invented one. Skipped rather than
+            # raised: one bad row must not discard a ranking that is otherwise usable.
+            if not 0 <= row.index < len(batch):
                 continue
-            original = results[row.index]
+            original = batch[row.index]
             rejoined.append(
                 RankedResult(
                     url=str(original.get("url", "")),
@@ -495,4 +549,4 @@ class ResultRanker:
                     relevance=row.relevance,
                 )
             )
-        return Ranking(results=rejoined)
+        return rejoined
