@@ -3,20 +3,50 @@
 import { memo } from "react";
 
 import { formatMib, formatSeconds } from "@/lib/format";
-import type { SystemSnapshot } from "@/lib/types";
-import { BigMetric, Metric, Panel, StatusBadge, UsageBar } from "./ui";
+import type { SystemSnapshot, Telemetry, TelemetrySample } from "@/lib/types";
+import {
+  BigMetric,
+  Freshness,
+  Metric,
+  Panel,
+  Sparkline,
+  StatusBadge,
+  UsageBar,
+} from "./ui";
 
 /**
  * The machine panels: GPU, host, and which models are resident.
  *
  * Split into three exported components rather than one, so the page decides the layout.
- * They share a props type because they are always rendered from the same snapshot — the
- * pieces are read together, and reading them from one object is what stops the panels
- * disagreeing with each other.
+ *
+ * ## Two sources, on purpose
+ *
+ * The GPU and Host panels read their live numbers from `telemetry`, resampled every
+ * second, and their slow-moving context — resident model sizes, inference process
+ * memory — from `snapshot`, refreshed on the change stream and a slow timer.
+ *
+ * That split is the fix for the gauges not being live. They previously read everything
+ * from the snapshot, which only refreshed when the change stream fired, and that stream
+ * fires on *model-call* activity. So an idle machine, or one long generation with no
+ * call boundary, left GPU load and VRAM frozen at whatever they read when the last call
+ * started. They looked live only by coincidence.
+ *
+ * Falling back to the snapshot's copy while telemetry has not arrived keeps the first
+ * paint populated rather than empty.
  */
 
-function GpuPanelInner({ snapshot }: { snapshot: SystemSnapshot | null }) {
-  const gpu = snapshot?.gpu;
+function GpuPanelInner({
+  snapshot,
+  telemetry,
+  history,
+}: {
+  snapshot: SystemSnapshot | null;
+  telemetry: Telemetry | null;
+  history: TelemetrySample[];
+}) {
+  // Telemetry first, snapshot as the fallback for the first paint before the first
+  // one-second sample lands.
+  const gpu = telemetry?.gpu ?? snapshot?.gpu;
 
   if (!gpu?.available) {
     return (
@@ -41,7 +71,15 @@ function GpuPanelInner({ snapshot }: { snapshot: SystemSnapshot | null }) {
   return (
     <Panel
       title="GPU"
-      action={<span className="faint mono">{gpu.name.replace("NVIDIA ", "")}</span>}
+      action={
+        <span style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+          <span className="faint mono">{gpu.name.replace("NVIDIA ", "")}</span>
+          {/* The age of the reading, counting up in real time. This is the honest
+              answer to "is this live?" — a frozen dashboard and an idle machine look
+              identical without it, which is exactly the failure being fixed here. */}
+          <Freshness ts={telemetry?.ts ?? null} />
+        </span>
+      }
     >
       <div className="metric-grid">
         <BigMetric
@@ -66,6 +104,39 @@ function GpuPanelInner({ snapshot }: { snapshot: SystemSnapshot | null }) {
 
       <UsageBar percent={gpu.used_pct} />
 
+      {/* Two charts, because the numbers behave completely differently and each is
+          misleading alone. VRAM is a step function - it jumps when a model loads and then
+          sits flat - so a steady 96% says nothing about whether work is happening. GPU
+          load is spiky and is the one that actually shows a generation running. Seeing
+          them together distinguishes "a model is resident but idle" from "resident and
+          busy", which is the question this panel exists to answer. */}
+      <div className="spark-row">
+        <div>
+          <div className="spark-label">
+            <span>GPU load</span>
+            <span className="mono">{gpu.utilisation_pct}%</span>
+          </div>
+          <Sparkline
+            values={history.map((sample) => sample.gpuPct)}
+            max={100}
+            colour="var(--running)"
+            label="GPU load over recent samples"
+          />
+        </div>
+        <div>
+          <div className="spark-label">
+            <span>VRAM</span>
+            <span className="mono">{gpu.used_pct}%</span>
+          </div>
+          <Sparkline
+            values={history.map((sample) => sample.vramPct)}
+            max={100}
+            colour="var(--thinking)"
+            label="VRAM use over recent samples"
+          />
+        </div>
+      </div>
+
       <Metric
         label="Used / total"
         value={`${formatMib(gpu.used_mib)} / ${formatMib(gpu.total_mib)}`}
@@ -84,7 +155,15 @@ function GpuPanelInner({ snapshot }: { snapshot: SystemSnapshot | null }) {
   );
 }
 
-function HostPanelInner({ snapshot }: { snapshot: SystemSnapshot | null }) {
+function HostPanelInner({
+  snapshot,
+  telemetry,
+  history,
+}: {
+  snapshot: SystemSnapshot | null;
+  telemetry: Telemetry | null;
+  history: TelemetrySample[];
+}) {
   const host = snapshot?.host;
 
   if (!host?.available) {
@@ -95,33 +174,52 @@ function HostPanelInner({ snapshot }: { snapshot: SystemSnapshot | null }) {
     );
   }
 
-  const ramPct = host.ram_total_mib
-    ? Math.round((host.ram_used_mib / host.ram_total_mib) * 100)
-    : 0;
+  // CPU and RAM come from telemetry so they move every second. The inference-process
+  // figures below stay on the snapshot, because that scan walks every process on the
+  // machine and costs about 260 ms - far too slow to repeat once a second.
+  const cpuPct = telemetry?.cpu_pct ?? host.cpu_pct;
+  const ramUsed = telemetry?.ram_used_mib ?? host.ram_used_mib;
+  const ramTotal = telemetry?.ram_total_mib ?? host.ram_total_mib;
+  const ramPct = ramTotal ? Math.round((ramUsed / ramTotal) * 100) : 0;
+  // Also from telemetry, so stopping or starting the model server shows within a
+  // second or two rather than at the next model call. The probe behind it is cached
+  // server-side, so asking every second costs nothing.
+  const serverUp = telemetry?.server_up ?? snapshot?.server_up ?? false;
 
   return (
     <Panel
       title="Host"
       action={
-        <span className={`badge ${snapshot?.server_up ? "badge-ok" : "badge-error"}`}>
+        <span className={`badge ${serverUp ? "badge-ok" : "badge-error"}`}>
           <span
             className="dot"
-            style={{ background: snapshot?.server_up ? "var(--ok)" : "var(--error)" }}
+            style={{ background: serverUp ? "var(--ok)" : "var(--error)" }}
           />
-          {snapshot?.server_up ? "model server up" : "model server down"}
+          {serverUp ? "model server up" : "model server down"}
         </span>
       }
     >
       <div className="metric-grid">
-        <BigMetric label="CPU" value={`${Math.round(host.cpu_pct)}%`} />
+        <BigMetric label="CPU" value={`${Math.round(cpuPct)}%`} />
         <BigMetric label="RAM" value={`${ramPct}%`} />
       </div>
 
       <UsageBar percent={ramPct} />
 
+      <div className="spark-label" style={{ marginTop: 8 }}>
+        <span>CPU</span>
+        <span className="mono">{Math.round(cpuPct)}%</span>
+      </div>
+      <Sparkline
+        values={history.map((sample) => sample.cpuPct)}
+        max={100}
+        colour="var(--ok)"
+        label="CPU load over recent samples"
+      />
+
       <Metric
         label="RAM used / total"
-        value={`${formatMib(host.ram_used_mib)} / ${formatMib(host.ram_total_mib)}`}
+        value={`${formatMib(ramUsed)} / ${formatMib(ramTotal)}`}
       />
       {/* System RAM held by the inference processes. It matters even though the model
           runs on the GPU: the runtime memory-maps the model file, so a 9 GB model also

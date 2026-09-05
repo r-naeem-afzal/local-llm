@@ -3,7 +3,7 @@
 import { useEffect, useState, memo } from "react";
 
 import type { ApiClient } from "@/lib/ApiClient";
-import { formatDuration, formatTime, formatTokens } from "@/lib/format";
+import { formatDuration, formatRate, formatTime, formatTokens } from "@/lib/format";
 import type { CallPayload, CallRecord } from "@/lib/types";
 import { Panel, StatusBadge } from "./ui";
 
@@ -77,6 +77,7 @@ function HistoryPanelInner({
                 <th className="num">Duration</th>
                 <th className="num">In</th>
                 <th className="num">Out</th>
+                <th className="num">Rate</th>
                 <th>Detail</th>
               </tr>
             </thead>
@@ -107,6 +108,12 @@ function HistoryPanelInner({
                   <td className="num">{formatDuration(call.duration_ms)}</td>
                   <td className="num">{formatTokens(call.tokens_in)}</td>
                   <td className="num">{formatTokens(call.tokens_out)}</td>
+                  {/* Per call, because a slow one is usually slow for a knowable
+                      reason - a cold model load, or a long page - and seeing the rate
+                      beside the duration separates "lots of work" from "running slowly". */}
+                  <td className="num dim">
+                    {formatRate(call.tokens_out, call.duration_ms)}
+                  </td>
                   <td className="dim">
                     {/* An error is the most important thing on the row, so it takes
                         precedence over the metadata summary. */}

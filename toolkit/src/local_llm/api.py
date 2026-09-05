@@ -53,6 +53,7 @@ class SystemRoutes:
     def register(self, router: APIRouter) -> None:
         router.add_api_route("/health", self.health, methods=["GET"])
         router.add_api_route("/system", self.system, methods=["GET"])
+        router.add_api_route("/telemetry", self.telemetry, methods=["GET"])
         router.add_api_route("/usage", self.usage, methods=["GET"])
 
     def health(self) -> dict[str, Any]:
@@ -70,6 +71,23 @@ class SystemRoutes:
             "endpoint": self._endpoint,
             "db_bytes": self._repository.size_bytes(),
         }
+
+    def telemetry(self) -> dict[str, Any]:
+        """GPU, CPU and RAM only — the numbers that move continuously.
+
+        Split out from `/system` because the two have different natures. GPU load, VRAM
+        and temperature are *sampled*: they change whether or not anything else happens.
+        Resident models and installed inventory are *event-driven*: they change only when
+        something loads or unloads.
+
+        The dashboard used to refresh `/system` only when the change-stream fired, and
+        that stream fires on model-call activity — so the GPU gauges froze whenever the
+        machine was idle, or during a single long generation with no call boundary. They
+        appeared live only by coincidence. This endpoint is cheap enough (about 16 ms,
+        against 2.5 seconds for a full snapshot before the probes were fixed) to poll
+        every second, which makes the gauges genuinely live.
+        """
+        return self._monitor.telemetry()
 
     def system(self) -> dict[str, Any]:
         """GPU, host RAM, loaded and installed models, and model-server reachability."""

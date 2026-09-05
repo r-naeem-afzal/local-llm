@@ -10,6 +10,8 @@ import type {
   LiveCall,
   Stats,
   SystemSnapshot,
+  Telemetry,
+  TelemetrySample,
 } from "./types";
 
 /**
@@ -35,6 +37,42 @@ import type {
 
 /** How often to re-read live progress while something is generating. */
 const LIVE_POLL_MS = 900;
+
+/**
+ * How often to sample GPU, CPU and RAM.
+ *
+ * This timer runs unconditionally, because these are *sampled* values rather than
+ * event-driven ones: GPU load and VRAM drift continuously whether or not a model call is
+ * happening. They were previously refreshed only when the change-stream fired, and that
+ * stream fires on call activity — so an idle machine, or one long generation with no call
+ * boundary, left the gauges frozen at whatever they read when the last call started. They
+ * looked live only by coincidence.
+ *
+ * One second is affordable because `/telemetry` is deliberately cheap: about 25 ms, against
+ * roughly 550 ms for a full `/system`. Getting there needed two backend fixes — a cached
+ * reachability probe and a cached process-table scan — without which this poll would have
+ * kept a CPU core busy doing nothing but monitoring.
+ */
+const TELEMETRY_POLL_MS = 1000;
+
+/**
+ * How often to re-read the slow-moving inventory: resident models, installed models, the
+ * RAM held by inference processes.
+ *
+ * Still refreshed on every change-stream event as well. The timer is a floor, not the
+ * primary path — it exists so that a model loaded or evicted by something other than this
+ * dashboard (the Bionic GUI, a TTL expiry) shows up within a few seconds rather than
+ * waiting for the next model call to happen.
+ */
+const SYSTEM_POLL_MS = 8000;
+
+/**
+ * How many telemetry samples the sparklines keep.
+ *
+ * 90 at one second apart is a minute and a half of history — long enough to see a
+ * generation start and finish, short enough that the array stays trivial to re-render.
+ */
+const TELEMETRY_HISTORY = 90;
 
 /**
  * How long to keep polling after the live list empties.
@@ -107,6 +145,10 @@ function useChangeGuard<T>(setter: (value: T) => void): (value: T) => void {
 
 export interface DashboardData {
   system: SystemSnapshot | null;
+  /** GPU, CPU and RAM, resampled every second. Null until the first reading lands. */
+  telemetry: Telemetry | null;
+  /** A bounded ring of recent samples, for the sparklines. Oldest first. */
+  telemetryHistory: TelemetrySample[];
   usage: ClaudeUsage | null;
   calls: CallRecord[];
   stats: Stats | null;
@@ -143,6 +185,8 @@ export function useDashboardData(): DashboardData {
   const [stats, setStats] = useState<Stats | null>(null);
   const [live, setLive] = useState<LiveCall[]>([]);
   const [agents, setAgents] = useState<AgentActivity | null>(null);
+  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
+  const [telemetryHistory, setTelemetryHistory] = useState<TelemetrySample[]>([]);
 
   // Every dataset goes through a change guard, so a poll that returns identical data
   // causes no state update and therefore no re-render anywhere downstream.
@@ -152,6 +196,10 @@ export function useDashboardData(): DashboardData {
   const putStats = useChangeGuard(setStats);
   const putLive = useChangeGuard(setLive);
   const putAgents = useChangeGuard(setAgents);
+  // Telemetry deliberately does NOT go through the change guard. Its whole purpose is to
+  // show movement, and two consecutive identical readings are meaningful information —
+  // "the GPU is genuinely steady" — not a redundant update to suppress. Guarding it would
+  // also freeze the "updated Xs ago" indicator whenever the numbers happened to repeat.
 
   const [callsOffset, setCallsOffsetState] = useState(0);
   const [callsHasMore, setCallsHasMore] = useState(false);
@@ -241,6 +289,32 @@ export function useDashboardData(): DashboardData {
     }
   }, [client, putLive]);
 
+  const refreshTelemetry = useCallback(async () => {
+    try {
+      const reading = await client.telemetry();
+      if (!mounted.current) return;
+      setTelemetry(reading);
+      setTelemetryHistory((previous) => {
+        const sample: TelemetrySample = {
+          t: Date.parse(reading.ts) || Date.now(),
+          gpuPct: reading.gpu.utilisation_pct,
+          vramPct: reading.gpu.used_pct,
+          cpuPct: reading.cpu_pct,
+          tempC: reading.gpu.temperature_c,
+        };
+        // Append and drop the oldest, so the array is bounded no matter how long the tab
+        // stays open. Without the slice, a dashboard left open overnight would accumulate
+        // tens of thousands of samples and the sparkline would redraw all of them.
+        const next = [...previous, sample];
+        return next.length > TELEMETRY_HISTORY ? next.slice(-TELEMETRY_HISTORY) : next;
+      });
+    } catch {
+      // Swallowed like the other pollers: this is replaced within a second, so a
+      // transient failure must not flash an error over a working page. The staleness
+      // indicator in the header is what surfaces a sustained outage.
+    }
+  }, [client]);
+
   const refreshAgents = useCallback(async () => {
     // Skip if the previous request has not come back yet. Each `/agents` call makes the
     // server stat a directory of transcripts, so if one ever takes longer than the poll
@@ -280,7 +354,21 @@ export function useDashboardData(): DashboardData {
     void refresh();
     void refreshLive();
     void refreshAgents();
-  }, [refresh, refreshLive, refreshAgents]);
+    void refreshTelemetry();
+  }, [refresh, refreshLive, refreshAgents, refreshTelemetry]);
+
+  // Sample the machine continuously. See TELEMETRY_POLL_MS for why this is unconditional.
+  useEffect(() => {
+    const timer = setInterval(() => void refreshTelemetry(), TELEMETRY_POLL_MS);
+    return () => clearInterval(timer);
+  }, [refreshTelemetry]);
+
+  // A slow floor under the inventory, so a model loaded or evicted outside this dashboard
+  // appears without waiting for the next model call to fire the change stream.
+  useEffect(() => {
+    const timer = setInterval(() => void refresh(), SYSTEM_POLL_MS);
+    return () => clearInterval(timer);
+  }, [refresh]);
 
   // The change-notification stream.
   useEffect(() => {
@@ -335,6 +423,8 @@ export function useDashboardData(): DashboardData {
 
   return {
     system,
+    telemetry,
+    telemetryHistory,
     usage,
     calls,
     stats,
@@ -352,6 +442,7 @@ export function useDashboardData(): DashboardData {
       void refresh();
       void refreshLive();
       void refreshAgents();
+      void refreshTelemetry();
     },
   };
 }

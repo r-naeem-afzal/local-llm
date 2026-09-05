@@ -151,9 +151,25 @@ class Settings(BaseSettings):
     )
 
     # ── model endpoint ──
+    # 127.0.0.1 rather than "localhost", and this is not cosmetic — it was measured.
+    #
+    # On Windows, "localhost" resolves to the IPv6 address ::1 *before* IPv4 127.0.0.1.
+    # LM Studio binds only to IPv4, so every connection first attempts ::1, waits for that
+    # attempt to time out, and only then falls back. Measured against the same server:
+    #
+    #     http://localhost:1234/v1/models    2017 ms
+    #     http://127.0.0.1:1234/v1/models       7 ms
+    #
+    # A 280x penalty on every request, and it is invisible: the call still succeeds, just
+    # slowly, so it reads as "the model server is sluggish" rather than as a DNS problem.
+    # The synchronous health probe paid the full 2 s; async streaming calls paid about
+    # 270 ms each because httpx attempts both families concurrently there.
+    #
+    # Use a literal IPv4 address unless the server is genuinely remote.
     url: str = Field(
-        default="http://localhost:1234/v1",
-        description="OpenAI-compatible base URL. Bionic/LM Studio serves this on port 1234.",
+        default="http://127.0.0.1:1234/v1",
+        description="OpenAI-compatible base URL. Bionic/LM Studio serves this on port 1234. "
+                    "Prefer 127.0.0.1 over localhost: see the note above.",
     )
     model: str = Field(default="qwen/qwen3-14b", description="Model id to request.")
     api_key: str = Field(

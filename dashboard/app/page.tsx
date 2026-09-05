@@ -38,6 +38,8 @@ import { useDashboardData } from "@/lib/useDashboardData";
 export default function DashboardPage() {
   const {
     system,
+    telemetry,
+    telemetryHistory,
     usage,
     calls,
     stats,
@@ -103,8 +105,16 @@ export default function DashboardPage() {
             </div>
 
             <div className="grid">
-              <GpuPanel snapshot={system} />
-              <HostPanel snapshot={system} />
+              <GpuPanel
+                snapshot={system}
+                telemetry={telemetry}
+                history={telemetryHistory}
+              />
+              <HostPanel
+                snapshot={system}
+                telemetry={telemetry}
+                history={telemetryHistory}
+              />
               <ModelsPanel snapshot={system} />
             </div>
 

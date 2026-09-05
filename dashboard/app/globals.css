@@ -555,3 +555,39 @@ button:focus-visible,
   font-size: 13px;
   padding: 10px 0;
 }
+
+
+/* ── sparklines ───────────────────────────────────────────────────────────────
+   The inline charts under the GPU and Host gauges. They answer the question a
+   single number cannot: is this value moving, or has it been sitting still?
+   A gauge reading 96% looks identical whether it just jumped there or has been
+   flat for an hour, and that difference is the whole point of a live view. */
+
+.spark {
+  display: block;
+  width: 100%;
+  /* An explicit background so the chart area is visible even before two samples
+     have arrived, which stops the panel resizing on the second tick. */
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.spark-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+
+.spark-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 3px;
+  /* Tabular figures so the live number does not shift the label sideways as its
+     digit count changes - the same jitter the metric rows avoid. */
+  font-variant-numeric: tabular-nums;
+}

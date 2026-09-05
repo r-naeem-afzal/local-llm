@@ -7,6 +7,7 @@ import type {
   LiveResponse,
   Stats,
   SystemSnapshot,
+  Telemetry,
 } from "./types";
 
 /**
@@ -47,6 +48,16 @@ export class ApiClient {
 
   system(): Promise<SystemSnapshot> {
     return this.get<SystemSnapshot>("/system");
+  }
+
+  /**
+   * The cheap, fast-moving subset: GPU, CPU, RAM.
+   *
+   * About 25 ms server-side against roughly 550 ms for `/system`, which is what makes it
+   * affordable to poll every second and therefore what makes the gauges live.
+   */
+  telemetry(): Promise<Telemetry> {
+    return this.get<Telemetry>("/telemetry");
   }
 
   usage(hours = 5): Promise<ClaudeUsage> {

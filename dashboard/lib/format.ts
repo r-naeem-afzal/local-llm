@@ -83,3 +83,29 @@ export function formatAgo(iso: string | null): string {
   if (seconds < 86_400) return `${Math.round(seconds / 3600)}h ago`;
   return `${Math.round(seconds / 86_400)}d ago`;
 }
+
+/**
+ * Generation throughput in tokens per second.
+ *
+ * The single most useful health number for a local model, and the one that makes a
+ * regression obvious: this machine sustains roughly 49 tok/s on a 14B at Q4, so a reading
+ * of 8 means the model has partially spilled to CPU and is running from system RAM.
+ * Neither the token count nor the duration alone would show that.
+ *
+ * Measured over the whole call, so it includes the time the model spent loading and
+ * thinking, not just emitting. That understates raw decode speed and is the honest number
+ * for "how long will this take" — which is the question being asked.
+ *
+ *   tokens=589, ms=11389  ->  "52 tok/s"
+ *   tokens=0               ->  "—"    (nothing was generated, so there is no rate)
+ */
+export function formatRate(tokens: number | null, ms: number | null): string {
+  // Guard both the missing case and the divide-by-zero. A call recorded with no duration
+  // would otherwise render "Infinity tok/s", which looks like a bug in the dashboard
+  // rather than a gap in the data.
+  if (!tokens || !ms || ms <= 0) return "—";
+  const rate = tokens / (ms / 1000);
+  // Below ten, one decimal matters - the difference between 2 and 2.5 tok/s is the
+  // difference between usable and not.
+  return rate < 10 ? `${rate.toFixed(1)} tok/s` : `${Math.round(rate)} tok/s`;
+}

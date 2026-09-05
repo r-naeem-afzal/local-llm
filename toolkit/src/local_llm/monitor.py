@@ -290,6 +290,16 @@ class HostProbe:
     # app spawns per loaded model.
     _PROCESS_NAMES = ("bionic", "lm studio", "lmstudio", "llama")
 
+    # Walking every process on the machine costs about 260 ms — by far the most expensive
+    # part of a host reading, and far too slow to repeat on a 1-second telemetry poll.
+    # The number it produces barely moves: a loaded model's resident memory is stable for
+    # minutes at a time. So the scan is cached and CPU/RAM, which are nearly free and do
+    # change continuously, are read fresh every time.
+    _PROCESS_SCAN_TTL_S = 10.0
+
+    def __init__(self) -> None:
+        self._process_cache: tuple[float, int, int] | None = None
+
     def read(self) -> HostInfo:
         try:
             import psutil
@@ -298,7 +308,7 @@ class HostProbe:
 
         try:
             virtual = psutil.virtual_memory()
-            rss_bytes, count = self._inference_memory(psutil)
+            rss_bytes, count = self._cached_inference_memory(psutil)
 
             return HostInfo(
                 available=True,
@@ -314,6 +324,19 @@ class HostProbe:
             )
         except Exception as exc:
             return HostInfo(available=False, error=f"{type(exc).__name__}: {exc}")
+
+    def _cached_inference_memory(self, psutil: Any) -> tuple[int, int]:
+        """The process scan, re-run at most every `_PROCESS_SCAN_TTL_S`.
+
+            first call            -> full scan, ~260 ms
+            calls within 10 s     -> cached tuple, ~0 ms
+        """
+        now = time.monotonic()
+        if self._process_cache is not None and now - self._process_cache[0] < self._PROCESS_SCAN_TTL_S:
+            return self._process_cache[1], self._process_cache[2]
+        rss_bytes, count = self._inference_memory(psutil)
+        self._process_cache = (now, rss_bytes, count)
+        return rss_bytes, count
 
     def _inference_memory(self, psutil: Any) -> tuple[int, int]:
         """Total RSS and process count for the inference processes.
@@ -523,12 +546,34 @@ class ModelRegistry:
 
 
 class ModelServerProbe:
-    """Whether the local OpenAI-compatible endpoint is answering."""
+    """Whether the local OpenAI-compatible endpoint is answering.
+
+    The answer is cached for a couple of seconds. This probe used to be the single most
+    expensive thing in a dashboard poll — 2 seconds of a 2.5 second `snapshot()` — because
+    a URL of "localhost" resolves to IPv6 ::1 first and the model server binds only IPv4,
+    so every check waited for a connection attempt to time out before falling back. That
+    specific cause is fixed (see `Settings.url`), but the caching stays: whether a server
+    is up cannot meaningfully change several times a second, and re-asking on every poll
+    made the dashboard's own monitoring the slowest thing on the machine.
+    """
+
+    # Short enough that starting the model server is reflected almost immediately, long
+    # enough that a 1-second telemetry poll does not open a socket every time.
+    _CACHE_TTL_S = 2.0
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._cached: tuple[float, bool] | None = None
 
     def is_up(self) -> bool:
+        now = time.monotonic()
+        if self._cached is not None and now - self._cached[0] < self._CACHE_TTL_S:
+            return self._cached[1]
+        result = self._probe()
+        self._cached = (now, result)
+        return result
+
+    def _probe(self) -> bool:
         # A plain blocking request rather than the async client: this is called from
         # synchronous contexts (a CLI status command, a startup check) where dragging in
         # an event loop to ask one yes/no question is not worth it.
@@ -815,6 +860,49 @@ class SystemMonitor:
     @property
     def usage_reader(self) -> ClaudeUsageReader:
         return self._usage
+
+    def telemetry(self) -> dict[str, Any]:
+        """The fast-moving numbers only, cheap enough to poll once a second.
+
+        ## Why this exists separately from `snapshot`
+
+        GPU load, VRAM and temperature are *sampled telemetry*: they change continuously
+        whether or not anything else happens. Everything else in `snapshot` is
+        *event-driven state* — which models are resident, whether the server is up — that
+        changes only when something acts on it.
+
+        The dashboard originally refreshed the whole snapshot only when the change-stream
+        fired, and that stream fires on model-call activity. So while a machine sat idle,
+        or during one long generation with no call boundary, the GPU gauges froze at
+        whatever they read when the last call started. They were live only by coincidence.
+
+        Splitting them lets the frontend poll this every second for genuinely live gauges
+        while leaving the expensive inventory on the event path.
+
+        ## What is deliberately excluded
+
+        The two expensive probes, because including either would defeat the purpose:
+
+        - the `lms` subprocess that lists resident models,
+        - the process-table walk that attributes RAM to the inference processes (~260 ms).
+
+        `server_up` *is* included, but only because it is cached — see `ModelServerProbe`.
+        Measured cost of this method is a few milliseconds, against 2.5 seconds for a full
+        snapshot before these fixes.
+        """
+        gpu = self._gpu.read()
+        host = self._host.read()
+
+        return {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "server_up": self._server.is_up(),
+            "gpu": gpu.as_dict(),
+            # Only the continuously-varying host fields. The inference-process figures come
+            # from the cached scan and belong with the slower snapshot.
+            "cpu_pct": host.cpu_pct,
+            "ram_used_mib": host.ram_used_mib,
+            "ram_total_mib": host.ram_total_mib,
+        }
 
     def snapshot(self) -> dict[str, Any]:
         """One serialisable dict with everything the dashboard needs in a single poll.

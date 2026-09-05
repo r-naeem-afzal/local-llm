@@ -125,6 +125,43 @@ export interface InstalledModel {
   max_context_length: number | null;
 }
 
+/**
+ * The fast-moving machine numbers, served by `/telemetry` and polled once a second.
+ *
+ * Separate from `SystemSnapshot` because the two have different natures. These are
+ * *sampled* values that drift continuously whether or not anything happens; a snapshot
+ * also carries *event-driven* state such as which models are resident, which changes only
+ * when something loads or unloads.
+ *
+ * Keeping them apart is what makes the GPU gauges genuinely live. They used to refresh
+ * only when the change-stream fired, and that fires on model-call activity — so an idle
+ * machine, or a single long generation with no call boundary, left them frozen.
+ */
+export interface Telemetry {
+  ts: string;
+  server_up: boolean;
+  gpu: GpuInfo;
+  cpu_pct: number;
+  ram_used_mib: number;
+  ram_total_mib: number;
+}
+
+/**
+ * One retained telemetry reading, for the sparklines.
+ *
+ * Deliberately a flat, tiny shape rather than the whole `Telemetry` object: the history
+ * holds a minute of samples, and keeping full snapshots would retain far more than the
+ * four numbers actually plotted.
+ */
+export interface TelemetrySample {
+  /** Milliseconds since the epoch — cheaper to compare than re-parsing an ISO string. */
+  t: number;
+  gpuPct: number;
+  vramPct: number;
+  cpuPct: number;
+  tempC: number | null;
+}
+
 export interface SystemSnapshot {
   ts: string;
   server_up: boolean;
