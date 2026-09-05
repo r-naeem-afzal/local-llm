@@ -36,6 +36,32 @@ class ModelLoader:
     # failing early would turn a slow load into a spurious error.
     _LOAD_TIMEOUT_S = 180
 
+    # Options every load must carry. Both are corrections to a measured 15x throughput
+    # loss, and neither is optional on this machine.
+    #
+    # `--gpu max` forces every layer onto the card. Left to itself, LM Studio picks an
+    # "optimal" offload ratio and, with a 14B on a 16 GB card that the desktop is already
+    # using 1.5 GB of, it repeatedly chose to leave part of the model in system RAM.
+    # Measured on the same model and the same prompt, minutes apart:
+    #
+    #     automatic offload   300 tokens in 65.0s  =   4.6 tok/s
+    #     --gpu max           300 tokens in  4.2s  =  71.4 tok/s
+    #
+    # The degraded state is invisible from outside: `nvidia-smi` reports the same 15.6 GiB
+    # of VRAM used and 100% GPU utilisation either way, because utilisation only means a
+    # kernel is resident, not that it is doing useful work. The one visible tell is power
+    # draw — 87 W of a 300 W limit while "fully utilised" — which is the signature of a
+    # card stalled on data arriving over PCIe rather than from its own memory.
+    #
+    # Without this flag, every timing this project has ever recorded is potentially a
+    # measurement of the offload state rather than of the change being tested. That is
+    # what happened: a routing change was blamed for an 8x slowdown that was partly this.
+    #
+    # `--parallel 1` because there is one pipeline and one card. Extra prediction slots
+    # each want their own KV cache, which is the memory pressure that pushes the
+    # automatic offload ratio into leaving layers on the CPU in the first place.
+    _LOAD_OPTIONS = ("--gpu", "max", "--parallel", "1")
+
     def __init__(self, runner: Any, registry: Any) -> None:
         self._runner = runner
         self._registry = registry
@@ -74,12 +100,13 @@ class ModelLoader:
             # overlap this method exists to prevent.
             time.sleep(2.0)
 
-        if not self._run(["load", model_key, "-y"]):
+        if not self._run(["load", model_key, *self._LOAD_OPTIONS, "-y"]):
             return False
 
         # Confirm rather than trust the exit code. `lms load` has been observed to accept
-        # options it then ignores — `--context-length` is silently dropped — so the only
-        # reliable evidence that a model is resident is asking what is resident.
+        # options it then ignores — `--context-length` is one, and `lms ps` reports the
+        # model's configured maximum context rather than what was actually allocated — so
+        # the only reliable evidence that a model is resident is asking what is resident.
         for _ in range(10):
             if model_key in self.resident_keys():
                 return True
