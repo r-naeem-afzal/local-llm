@@ -13,7 +13,7 @@ than something you hope.
 It also includes a complete research pipeline built on top of that: ask a question, get a
 cited markdown report, with every quote verified against the page it came from.
 
-```
+```text
 scope -> search -> dedupe -> rank -> extract -> verify -> report
 ```
 
@@ -246,9 +246,9 @@ Stated because they change what the output is worth, not to be modest.
   commercial question, a run can return claims about the wrong thing simply because the
   answer was never in the result pool. No reading model recovers a question the search
   missed.
-- **Deduplication is by URL only.** `nomic-embed-text-v1.5` is installed but unused, so the
-  same fact from five sites counts as five claims and the report reads as consensus when it
-  is one fact echoed.
+- **Deduplication is by URL only.** There is no semantic deduplication, so the same fact
+  from five sources counts as five claims and the report reads as consensus when it is one
+  fact echoed. Wiring in an embedding model is the fix and is not done.
 - **Recency and source quality are extracted and displayed but never weighted**, so a 2019
   forum post ranks level with a 2026 primary source. There is no contradiction detection.
 - **Facts inside JavaScript-rendered tables** need the browser fetch path; the HTTP fetcher

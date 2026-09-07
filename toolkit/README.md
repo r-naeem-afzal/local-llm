@@ -19,7 +19,7 @@ pip install -e ".[all]"             # + API, monitoring and MCP server
 Create a `.env` (see `.env.example`):
 
 ```env
-LOCAL_LLM_URL=http://localhost:1234/v1
+LOCAL_LLM_URL=http://127.0.0.1:1234/v1
 LOCAL_LLM_MODEL=qwen/qwen3-14b
 ```
 
@@ -54,8 +54,8 @@ async def main():
 
     # Fetch a page and pull falsifiable claims with supporting quotes
     extraction = await extract_claims(
-        "https://en.wikipedia.org/wiki/Payoneer",
-        "How do freelancers receive USD payments?",
+        "https://en.wikipedia.org/wiki/Transformer_(deep_learning_architecture)",
+        "What does this say about attention?",
     )
     for claim in extraction.claims:
         print(f"[{claim.importance}] {claim.claim}")

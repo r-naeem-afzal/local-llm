@@ -1,13 +1,24 @@
-# Local LLM Toolkit — status and resume notes
+# Local LLM Toolkit — engineering log
 
-Updated 2026-09-05 (was paused 2026-09-04). This file is the handoff: what exists, what is proven, what is
-broken, and what to do next.
+**What this file is.** A running record of what has been built, what has been *measured*,
+and what turned out to be wrong. It is kept because nearly every non-obvious decision in
+this codebase was driven by a number rather than a preference, and those numbers are
+invisible in the source. If you are wondering why some piece of this is shaped oddly, the
+answer is probably here.
+
+It is written as working notes rather than polished documentation, and it contains
+machine-specific measurements (a 16 GB RTX 5070 Ti on Windows 11) that will not all
+transfer. Read it as evidence, not as instructions. For getting started, see the
+[README](../README.md); for how to contribute, see
+[CONTRIBUTING.md](../CONTRIBUTING.md).
+
+Last substantive update 2026-09-05.
 
 ## Goal
 
-Delegate mechanical work to a local model instead of spending Claude Team Pro plan
-usage on it, with an interface that shows exactly what the local models are doing —
-and eventually ship it as a reusable, `.env`-configured package.
+Delegate mechanical work to a local model instead of spending metered API or plan usage on
+it, with an interface that shows exactly what the local models are doing — and ship it as a
+reusable, `.env`-configured package.
 
 Constraints this design has to respect:
 
