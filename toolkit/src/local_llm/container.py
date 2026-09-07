@@ -28,6 +28,7 @@ from .client import LocalLLMClient
 from .config import Settings
 from .database import DatabaseBackend, build_backend
 from .extract import ClaimExtractor, ExtractorChain, PageFetcher, PromptLibrary, ResultRanker
+from .membership import ListMembershipChecker
 from .loader import ModelLoader, VramBudget
 from .routing import ModelRouter
 from .monitor import (
@@ -121,8 +122,41 @@ class Toolkit:
         return PromptLibrary()
 
     @cached_property
+    def browser_page_source(self):
+        """The browser fetch path, or None when Playwright is not installed.
+
+        Built here so `extract.py` never imports Playwright: a process that only wants an
+        HTTP fetch should not pay for that import, and the package must stay installable
+        without the browser extra. Returning None rather than raising is what lets
+        `PageFetcher` degrade to HTTP-only instead of failing at construction.
+        """
+        from .fetch_browser import BrowserPageSource
+
+        source = BrowserPageSource(self._settings, ExtractorChain())
+        return source if source.available() else None
+
+    @cached_property
     def page_fetcher(self) -> PageFetcher:
-        return PageFetcher(self._settings, ExtractorChain())
+        """HTTP first, escalating to a browser when the result looks incomplete.
+
+        The browser source is a singleton because it holds a live Chromium process; a
+        fresh one per fetch would launch a browser per page, which is the cost the reuse
+        exists to avoid.
+        """
+        return PageFetcher(
+            self._settings,
+            ExtractorChain(),
+            browser=self.browser_page_source,
+        )
+
+    @cached_property
+    def membership_checker(self) -> ListMembershipChecker:
+        """Answers "is this term in a list on this page" as a fact, with no model."""
+        return ListMembershipChecker(
+            self.page_fetcher,
+            browser=self.browser_page_source,
+            reattribute_above=self._settings.membership_reattribute_above_lines,
+        )
 
     @cached_property
     def claim_extractor(self) -> ClaimExtractor:

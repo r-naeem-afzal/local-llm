@@ -192,6 +192,33 @@ class Settings(BaseSettings):
         default=24_000, description="Truncate page text before it reaches the model."
     )
 
+    # Below this many characters of extracted text, re-fetch the page in a real browser.
+    # 1,200 is deliberately low: it catches an empty or consent-gated page without paying
+    # for a browser launch on every ordinary article. It does NOT catch a page whose body
+    # extracted fine but whose *table* was built by JavaScript — Paddle's supported-
+    # countries page yields a perfectly normal-looking 2,715 characters with the country
+    # list missing entirely. That case is caught by the caller passing `expect`, not by
+    # this threshold, and assuming otherwise is what produced a week of confident wrong
+    # answers about which countries are supported.
+    browser_escalate_below_chars: int = Field(default=1200, ge=0)
+    # How long to wait for a rendered page before giving up on one wait strategy.
+    # Generous because the pages worth escalating to a browser for are the slow ones —
+    # a documentation site loading a table from an API is the whole use case.
+    browser_page_timeout_s: float = Field(default=45.0, gt=0)
+    # A fixed settle delay after the page reports ready. Frameworks routinely render a
+    # table one tick later, and without this the fetch wins the race and captures the
+    # empty shell — which is indistinguishable from a page that genuinely has no table.
+    browser_settle_s: float = Field(default=2.5, ge=0)
+    # When a membership check attributes a term to a heading this many lines back, re-read
+    # the page in a browser before trusting the attribution. Measured: fetched over HTTP,
+    # Lemon Squeezy's supported-countries page arrives with its whole country list joined
+    # onto a single line, so line-based heading attribution put Pakistan under the coarse
+    # "Supported countries" 86 lines back instead of the precise "Bank payouts supported in
+    # the following countries:" immediately above it. The browser's DOM text keeps one item
+    # per line. Without this, the check answers the question with the wrong list name — and
+    # the list name is the entire answer.
+    membership_reattribute_above_lines: int = Field(default=20, ge=0)
+
     # ── concurrency ──
     concurrency: int = Field(
         default=2,

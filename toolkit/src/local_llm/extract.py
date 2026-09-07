@@ -96,6 +96,10 @@ class Page(BaseModel):
     text: str
     truncated: bool
     extractor: str
+    # Which page source produced this — "http" or "browser". Recorded because the two
+    # differ in what they can see: a fact absent from an http-sourced page may simply not
+    # have been rendered yet, so "absent" means much less than it does from a browser.
+    source: str = "http"
 
 
 class SourceExtraction(Extraction):
@@ -247,8 +251,30 @@ class ExtractorChain:
 # ─────────────────────────── fetching ───────────────────────────
 
 
-class PageFetcher:
-    """Downloads a URL and hands back cleaned, length-capped text."""
+class PageSource(ABC):
+    """One way of getting a page's text. HTTP is cheap; a real browser is thorough.
+
+    An abstraction because the two differ in cost by three orders of magnitude and in
+    capability in one decisive way: a plain HTTP fetch cannot see content that JavaScript
+    builds after the document loads. Callers should not have to know which one ran, only
+    what it produced and how.
+    """
+
+    name: str = "abstract"
+
+    @abstractmethod
+    async def fetch(self, url: str) -> Page:
+        """Return the page's text, or raise if it cannot be retrieved at all."""
+
+
+class HttpPageSource(PageSource):
+    """A single HTTP GET, then article extraction. The default, and right most of the time.
+
+    Fast — tens of milliseconds — and sufficient for any page that ships its content in
+    the initial HTML, which is most articles and documentation.
+    """
+
+    name = "http"
 
     def __init__(self, settings: Settings, chain: ExtractorChain | None = None) -> None:
         self._settings = settings
@@ -298,7 +324,107 @@ class PageFetcher:
             # appropriate suspicion — the evidence for it may have been cut off.
             truncated=len(text) > limit,
             extractor=extractor,
+            source=self.name,
         )
+
+
+class PageFetcher:
+    """Fetches a page over HTTP, escalating to a real browser when HTTP is not enough.
+
+    Keeps the name and the `fetch(url)` shape it has always had, so no caller changed;
+    what changed is that it now *chooses* a source rather than being one. The escalation
+    policy lives here and nowhere else, which is the same arrangement `ExtractorChain`
+    uses for extraction strategies.
+
+    ## Why escalation exists at all
+
+    Measured on 2026-09-08, and it cost a week of wrong answers. Paddle's supported-
+    countries page builds its country table in JavaScript. A plain HTTP fetch of it
+    returns 2,715 characters of text containing **zero** occurrences of "Pakistan" or
+    "PK" — and it returns them *successfully*, with no error and a healthy-looking length.
+    The research pipeline could not distinguish "this page does not say that" from "this
+    page was not really retrieved", asked a model whether Pakistan was supported, and got
+    a confident answer in both directions on different runs.
+
+    So the failure being defended against is not a crash. It is a silent, plausible,
+    wrong answer derived from content that was never on screen.
+
+    ## Why a length threshold alone is not the test
+
+    The obvious rule — escalate when the text looks too short — does not work, and the
+    same measurement is why. 2,715 characters is not suspiciously short; it is a normal
+    length for a documentation page. The missing thing was a *table*, not the body.
+
+    So there are two triggers, and the second is the important one:
+
+    * the HTTP fetch failed, or returned less text than `browser_escalate_below_chars`;
+    * the caller said what it expected to find (`expect`) and the text does not contain
+      it. A caller checking whether a country appears in a list knows the term it is
+      looking for, so absence is a reason to look harder before concluding anything.
+
+    Without `expect`, escalation is best-effort. With it, "not found" becomes trustworthy,
+    which is precisely what a membership check needs.
+    """
+
+    def __init__(self, settings: Settings, chain: ExtractorChain | None = None,
+                 http: PageSource | None = None,
+                 browser: PageSource | None = None) -> None:
+        self._settings = settings
+        self._http = http or HttpPageSource(settings, chain or ExtractorChain())
+        # Injected rather than constructed here so a test can supply a fake and never
+        # launch Chromium, and so this module does not import Playwright at all — the
+        # browser source lives in its own module and is optional, exactly as the browser
+        # search provider is.
+        self._browser = browser
+
+    async def fetch(self, url: str, expect: str | None = None) -> Page:
+        """Fetch `url`, escalating to the browser if the result looks incomplete.
+
+            fetch("https://developer.paddle.com/…")                 ->  http, 2,715 chars
+            fetch("https://developer.paddle.com/…", expect="PK")    ->  browser, 5,287 chars
+
+        The second form is the one that gets the country table, because the absence of the
+        expected term is what triggers the more expensive path.
+        """
+        page: Page | None = None
+        failure: Exception | None = None
+        try:
+            page = await self._http.fetch(url)
+        except Exception as exc:
+            # Held rather than raised: the browser may well succeed where HTTP failed, and
+            # a consent gate or a bot challenge is exactly the case where it does.
+            failure = exc
+
+        if page is not None and not self._looks_incomplete(page, expect):
+            return page
+
+        if self._browser is None:
+            if page is not None:
+                return page
+            raise failure if failure is not None else RuntimeError(f"cannot fetch {url}")
+
+        try:
+            return await self._browser.fetch(url)
+        except Exception:
+            # The browser is the fallback, so its failure must not lose a usable HTTP
+            # result. Returning the weaker page beats returning nothing.
+            if page is not None:
+                return page
+            raise
+
+    def _looks_incomplete(self, page: Page, expect: str | None) -> bool:
+        """Whether this page is worth re-fetching with a browser.
+
+            Page(text=""),                     expect=None   ->  True   (nothing at all)
+            Page(text=800 chars),              expect=None   ->  True   (below threshold)
+            Page(text=2,715 chars),            expect=None   ->  False  (looks fine)
+            Page(text=2,715 chars, no "PK"),   expect="PK"   ->  True   (asked for, absent)
+        """
+        if len(page.text) < self._settings.browser_escalate_below_chars:
+            return True
+        if expect and expect.lower() not in page.text.lower():
+            return True
+        return False
 
 
 # ─────────────────────────── prompts ───────────────────────────
