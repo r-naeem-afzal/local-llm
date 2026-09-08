@@ -5,6 +5,13 @@
 .env
 .env.local
 
+# ── generated code graph ─────────────────────────────────────────────────────
+# Rebuilt from the syntax trees after every commit by tools/graphify/graphify.py, so it is
+# derived data with a source of truth already in the repository. Committing it would create
+# a conflict on almost every merge, and a stale copy in history is worse than none because
+# it still looks authoritative.
+.graphify/
+
 # ── local data, never shared ─────────────────────────────────────────────────
 # The SQLite call history and the ephemeral live-progress files. Machine-specific
 # and regenerated on demand; committing them would also commit every prompt and
