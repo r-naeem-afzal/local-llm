@@ -50,6 +50,20 @@ branch, merge, rebase, `reset`, `checkout` over local changes, `stash`, `clean`.
 Read-only is always fine and usually what you want: `git status`, `git log`, `git diff`,
 `git branch -vv`.
 
+**This applies to every repository, not just this one.** Permission to commit once does not
+carry to the next commit, and permission in one project does not carry to another. A
+`.gitignore` line, a generated file, a tidy-up — none of them are exceptions. If a change I
+asked for only takes effect once committed, make the change, say so, and let me commit it.
+
+### When I do ask you to commit
+
+- **No `Co-Authored-By` trailer.** Leave it out of the message entirely.
+- **Author it as yourself**, not as me. Do not borrow my git identity from the global config
+  or from another repository — a commit attributed to me is a claim that I wrote and
+  reviewed it. Set the author explicitly on the command:
+
+      git -c user.name="Claude" -c user.email="noreply@anthropic.com" commit -m "…"
+
 ## Architecture: classic OO, following SOLID
 
 Write classes with clear responsibilities and injected dependencies — not a flat set of

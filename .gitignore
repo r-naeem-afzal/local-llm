@@ -44,3 +44,22 @@ next-env.d.ts
 .idea/
 Thumbs.db
 Desktop.ini
+
+# ── local-only tooling: graphify and Obsidian ──
+# graphify is development infrastructure that lives outside every repository, in
+# Ideas/.tools/graphify, and writes its graphs to Ideas/.graphify/<project>/. Nothing about
+# it belongs in a project's history: the tool is shared and versionless by choice, and the
+# graph is derived data whose source of truth is the code beside it. A committed graph would
+# conflict on nearly every merge, and a stale one in history still looks authoritative.
+#
+# These entries are defensive. The output already lives outside the repo, so in normal use
+# none of them match anything — they exist so that a copy landing in the working tree by
+# accident, or an older layout, cannot be committed.
+.graphify/
+graphify-out/
+tools/graphify/
+.claude/skills/graphify/
+
+# Obsidian's own workspace state: per-machine UI layout, plugin settings and caches. It has
+# no meaning on another computer and changes every time the app is opened.
+.obsidian/
